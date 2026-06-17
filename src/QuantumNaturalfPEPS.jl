@@ -16,6 +16,12 @@ using ITensorMPS
 using QuantumNaturalGradient: TensorOperatorSum, Parameters
 using QuantumNaturalGradient
 
+using MatrixFactorizations
+using SkewLinearAlgebra
+using Zygote
+
+include("TrialStates/TrialStates.jl")
+
 include("misc.jl")
 include("tensor_ops.jl")
 include("mps_ops.jl")
