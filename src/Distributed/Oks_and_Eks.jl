@@ -5,6 +5,8 @@ function compute_importance_weights(logψs, logpcs)
     return exp.(log_ratios .- logZ)
 end
 
+include("Oks_and_Eks_fixed_sz.jl")
+
 function generate_Oks_and_Eks(peps::AbstractPEPS, ham::OpSum; kwargs...)
     hilbert = siteinds(peps)
     ham_op = TensorOperatorSum(ham, hilbert)
