@@ -40,3 +40,4 @@ Parameters(f::FrozenTrialState) = []
 Base.eltype(f::FrozenTrialState) = eltype(f.state)
 
 include("GaussianState.jl")
+include("GutzwillerProjectedState.jl")
