@@ -76,8 +76,14 @@ function get_Ok(trial_state::IdentityState, S::Matrix{Int64}, Ok)
     return Ok # identity state has no variational parameters, so return the Ok object unchanged
 end
 
-function get_Ok(trial_state::FrozenTrialState, S::Matrix{Int64}, Ok)
-    return Ok # frozen trial state exposes no variational parameters, so return the Ok object unchanged
+get_Ok(::FrozenTrialState, ::Matrix{Int64}, Ok) = Ok
+
+function get_Ok(
+    trial_state::FixedGutzwillerProjectedState,
+    ::Matrix{Int64},
+    Ok,
+)
+    return Ok
 end
 
 """
