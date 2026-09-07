@@ -60,6 +60,12 @@ export ParameterizedGutzwillerProjectedState, gutzwiller_project
 export gutzwiller_amplitude, gutzwiller_weight, gutzwiller_log_gradient
 export GutzwillerExchangeCache, gutzwiller_exchange_ratio
 export accept_gutzwiller_exchange!
+export GaussianSchurCache, gaussian_conditional_probabilities
+export condition_gaussian!
+export GaussianOccupationCache, gaussian_flip_probability_ratio
+export accept_gaussian_flip!
+export ProjectedGaussianSchurCache, projected_conditional_probabilities
+export condition_projected_gaussian!
 export PartonMeanFieldResult, parton_density_matrix
 export parton_mean_field_energy, solve_parton_mean_field
 

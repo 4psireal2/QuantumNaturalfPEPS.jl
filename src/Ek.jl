@@ -122,7 +122,7 @@ function get_4body_term(peps::AbstractPEPS, env_top::Vector{Environment}, env_do
     end
 
     c = (con_right*con_left)[]
-    if isreal(c) && c < 0
+    if isreal(c) && real(c) < 0
         c = complex(c)
     end
     logψ_flipped = log(c) + f
@@ -178,7 +178,7 @@ function get_term(peps::AbstractPEPS, env_top::Vector{Environment}, env_down::Ve
         flip = flip * h_envs_r[maxy]
     end
     c = contract(flip)[]
-    if isreal(c) && c < 0
+    if isreal(c) && real(c) < 0
         c = complex(c)
     end
     logψ_flipped = log(c) + f
@@ -237,7 +237,7 @@ function get_longerHor_term(peps::AbstractPEPS, env_top::Vector{Environment}, en
         flip = flip * h_envs_r[maxy]
     end
     c = contract(flip)[]
-    if isreal(c) && c < 0
+    if isreal(c) && real(c) < 0
         c = complex(c)
     end
     logψ_flipped = log(c) + f
@@ -409,13 +409,13 @@ function get_Ek_Slater(GS::GaussianState, H_BdG_exact::Hermitian, S::Matrix{Int6
 
         coeff = zero(ComplexF64)
         if ja == 0 && jb == 1 # hopping from b to a such that we have nonzero overlap: <j'| t_ab c_a^† c_b |j> = sign * t_ab * S_j
-            coeff = SlaterConnections[(a, b)].t
-        elseif ja == 1 && jb == 0 # hopping from a to b such that we have nonzero overlap: <j'| t_ba c_b^† c_a |j> = sign * t_ba * S_j
             coeff = conj(SlaterConnections[(a, b)].t)
+        elseif ja == 1 && jb == 0 # hopping from a to b such that we have nonzero overlap: <j'| t_ba c_b^† c_a |j> = sign * t_ba * S_j
+            coeff = SlaterConnections[(a, b)].t
         elseif ja == 0 && jb == 0 # pairing of a and b such that we have nonzero overlap: <j'| Δ_ab c_a c_b |j> = sign * Δ_ab * S_j
-            coeff = SlaterConnections[(a, b)].Δ
-        else # pairing of a and b such that we have nonzero overlap: <j'| Δ_ab* c†_a c†_b |j> = sign * conj(Δ_ab) * S_j
             coeff = conj(SlaterConnections[(a, b)].Δ)
+        else # pairing of a and b such that we have nonzero overlap: <j'| Δ_ab* c†_a c†_b |j> = sign * conj(Δ_ab) * S_j
+            coeff = SlaterConnections[(a, b)].Δ
         end
 
         h_elem = fsign * coeff
