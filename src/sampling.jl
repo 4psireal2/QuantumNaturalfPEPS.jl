@@ -109,15 +109,14 @@ row_major_site(i::Int, j::Int, Ly::Int) = (i - 1) * Ly + j
 col_major_site(i::Int, j::Int, Lx::Int) = i + (j - 1) * Lx
 
 # samples from ρ_r and updates pc
-function sample_ρr(ρ_r, S, r, c; trial_state::AbstractTrialState=IdentityState(size(ρ_r, 1)))
-    occ_dict = Dict{Int, Int}()
-    for i in 1:size(S,1), j in 1:size(S,2)
-        if i < r || (i == r && j < c)
-            # use linear indexing (assume square lattice here)
-            occ_dict[col_major_site(i, j, size(S,1))] = S[i,j] # -> use Column Major Order here to be consistent with the PEPS site ordering and the sampling order in get_sample()
-        end
-    end
-
+function sample_ρr(
+    ρ_r,
+    S,
+    r,
+    c;
+    trial_state::AbstractTrialState=IdentityState(size(ρ_r, 1)),
+    trial_sampling_cache=nothing,
+)
     # prepare prob vector for PEPS
     k = size(ρ_r, 1) 
     T = real(eltype(ρ_r))
@@ -130,16 +129,56 @@ function sample_ρr(ρ_r, S, r, c; trial_state::AbstractTrialState=IdentityState
     # prepare prob vector for trial state
     current_site_key = col_major_site(r, c, size(S,1)) # use column major ordering here
     p_trial = Vector{T}(undef, k)
-    for i in 1:k
-        occ_dict[current_site_key] = i-1
-        p_trial[i] = get_prob(trial_state, occ_dict) # joint probability
+    if trial_sampling_cache isa GaussianSchurCache
+        k == 2 || throw(DimensionMismatch(
+            "Gaussian occupation sampling requires local dimension 2, got $k",
+        ))
+        first(trial_sampling_cache.remaining_sites) == current_site_key ||
+            throw(ArgumentError(
+                "Gaussian Schur cache expects site " *
+                "$(first(trial_sampling_cache.remaining_sites)), got $current_site_key",
+            ))
+        p_trial .= gaussian_conditional_probabilities(trial_sampling_cache)
+    elseif trial_sampling_cache isa ProjectedGaussianSchurCache
+        k == 2 || throw(DimensionMismatch(
+            "Gutzwiller-projected spin sampling requires local dimension 2, got $k",
+        ))
+        first(trial_sampling_cache.remaining_sites) == current_site_key ||
+            throw(ArgumentError(
+                "projected Gaussian Schur cache expects site " *
+                "$(first(trial_sampling_cache.remaining_sites)), got $current_site_key",
+            ))
+        p_trial .= projected_conditional_probabilities(trial_sampling_cache)
+    else
+        occ_dict = Dict{Int, Int}()
+        for i in 1:size(S, 1), j in 1:size(S, 2)
+            if i < r || (i == r && j < c)
+                occ_dict[col_major_site(i, j, size(S, 1))] = S[i, j]
+            end
+        end
+        for i in 1:k
+            occ_dict[current_site_key] = i-1
+            p_trial[i] = get_prob(trial_state, occ_dict) # joint probability
+        end
     end
     
     p_final = p .* p_trial
 
     i = sample_p(p_final, normalize=true)
+    if trial_sampling_cache isa GaussianSchurCache
+        condition_gaussian!(trial_sampling_cache, i - 1)
+    elseif trial_sampling_cache isa ProjectedGaussianSchurCache
+        condition_projected_gaussian!(trial_sampling_cache, i - 1)
+    end
     return i-1, p_final[i]
 end
+
+_direct_sampling_cache(::AbstractTrialState, _) = nothing
+_direct_sampling_cache(state::GaussianState, order) = GaussianSchurCache(state; order)
+_direct_sampling_cache(state::ParameterizedGutzwillerProjectedState, order) =
+    ProjectedGaussianSchurCache(state; order)
+_direct_sampling_cache(state::FrozenTrialState, order) =
+    _direct_sampling_cache(state.state, order)
 
 function sample_p(probs::Vector{T}; normalize=true) where T<:Real
     if normalize
@@ -167,6 +206,11 @@ function get_sample(peps::AbstractPEPS; mode::Symbol=:full, alg="densitymatrix",
     env_top = Array{Environment}(undef, size(peps, 1)-1)
     sites = siteinds(peps)
     ρ_r = ITensor()
+    sampling_order = [
+        col_major_site(i, j, size(peps, 1))
+        for i in 1:size(peps, 1) for j in 1:size(peps, 2)
+    ]
+    trial_sampling_cache = _direct_sampling_cache(trial_state, sampling_order)
     
     logpc = 0
     # we loop through every row (This uses row-major ordering)
@@ -185,7 +229,14 @@ function get_sample(peps::AbstractPEPS; mode::Symbol=:full, alg="densitymatrix",
             ρ_r, sigma = get_reduced_ρ(ket[j], bra[j], peps, i, j, E, sigma)
             
             # sample from ρ_r
-            S[i, j], pc = sample_ρr(ρ_r, S, i, j; trial_state=trial_state)
+            S[i, j], pc = sample_ρr(
+                ρ_r,
+                S,
+                i,
+                j;
+                trial_state,
+                trial_sampling_cache,
+            )
             logpc += log(pc)
             
             # after the sampling of the current site, it is fixed and its contraction with the aleady sampled sites is stored in sigma
