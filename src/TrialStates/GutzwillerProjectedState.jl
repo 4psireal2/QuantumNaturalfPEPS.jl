@@ -10,8 +10,7 @@ If `Nup` is specified, amplitudes outside that fixed-magnetization sector are
 set to zero. Here spin configurations use the PEPS convention `0 => ↑` and
 `1 => ↓`, so `Nup` is the number of zeros in a configuration.
 
-The projected amplitudes are not normalized; their overall normalization is
-irrelevant for variational Monte Carlo and amplitude ratios.
+The projected amplitudes are not normalized.
 """
 abstract type AbstractGutzwillerProjectedState <: AbstractTrialState end
 
@@ -141,133 +140,6 @@ Return the unnormalized configuration weight `|Ψ_G(σ)|²`.
 gutzwiller_weight(state::AbstractGutzwillerProjectedState, spin_configuration) =
     abs2(gutzwiller_amplitude(state, spin_configuration))
 
-"""
-    GutzwillerExchangeCache(state, spin_configuration)
-
-Cache determinant inverses for fixed-magnetization Monte Carlo updates of a
-`FixedGutzwillerProjectedState`. A proposal exchanges two opposite spins and hence
-replaces two rows of the full site-ordered Slater matrix. Ratios are evaluated
-from a `2 x 2` determinant and accepted moves update the inverse with the
-Woodbury identity.
-"""
-mutable struct GutzwillerExchangeCache
-    orbitals::Matrix{ComplexF64}
-    configuration::Vector{Int}
-    selected_rows::Vector{Int}
-    inverse_slater::Matrix{ComplexF64}
-    orbital_action::Matrix{ComplexF64}
-    log_amplitude::ComplexF64
-    accepted_since_rebuild::Int
-end
-
-function _gutzwiller_logdet(slater::AbstractMatrix)
-    logabs, phase = logabsdet(slater)
-    isfinite(logabs) || throw(SingularException(0))
-    return ComplexF64(logabs) + log(ComplexF64(phase))
-end
-
-function GutzwillerExchangeCache(
-    state::AbstractGutzwillerProjectedState,
-    spin_configuration::AbstractVector{<:Integer},
-)
-    rows, number_up = _gutzwiller_rows(state, spin_configuration)
-    if !isnothing(state.Nup) && number_up != state.Nup
-        throw(ArgumentError(
-            "spin configuration has Nup=$number_up, but the state requires Nup=$(state.Nup)",
-        ))
-    end
-
-    orbitals = Matrix{ComplexF64}(state.occupied_orbitals)
-    slater = orbitals[rows, :]
-    inverse_slater = inv(slater)
-    return GutzwillerExchangeCache(
-        orbitals,
-        collect(Int, spin_configuration),
-        rows,
-        inverse_slater,
-        orbitals * inverse_slater,
-        _gutzwiller_logdet(slater),
-        0,
-    )
-end
-
-function _rebuild_gutzwiller_exchange_cache!(cache::GutzwillerExchangeCache)
-    slater = cache.orbitals[cache.selected_rows, :]
-    cache.inverse_slater .= inv(slater)
-    cache.orbital_action .= cache.orbitals * cache.inverse_slater
-    cache.log_amplitude = _gutzwiller_logdet(slater)
-    cache.accepted_since_rebuild = 0
-    return cache
-end
-
-function _gutzwiller_exchange_rows(cache::GutzwillerExchangeCache, i::Int, j::Int)
-    N = length(cache.configuration)
-    1 <= i <= N || throw(BoundsError(cache.configuration, i))
-    1 <= j <= N || throw(BoundsError(cache.configuration, j))
-    i != j || throw(ArgumentError("the two exchange sites must be different"))
-    cache.configuration[i] != cache.configuration[j] || throw(ArgumentError(
-        "a fixed-magnetization exchange requires opposite spins",
-    ))
-    return (
-        2i - 1 + (1 - cache.configuration[i]),
-        2j - 1 + (1 - cache.configuration[j]),
-    )
-end
-
-"""
-    gutzwiller_exchange_ratio(cache, i, j)
-
-Return `Psi(swapped)/Psi(current)` when the opposite spins on sites `i` and
-`j` are exchanged. Site labels follow Julia column-major lattice ordering.
-"""
-function gutzwiller_exchange_ratio(cache::GutzwillerExchangeCache, i::Int, j::Int)
-    alternative_i, alternative_j = _gutzwiller_exchange_rows(cache, i, j)
-    action = cache.orbital_action
-    return action[alternative_i, i] * action[alternative_j, j] -
-           action[alternative_i, j] * action[alternative_j, i]
-end
-
-"""
-    accept_gutzwiller_exchange!(cache, i, j; rebuild_after=64)
-
-Update a cache after accepting the exchange of the opposite spins at `i` and
-`j`. The inverse is rebuilt periodically to control roundoff accumulation.
-"""
-function accept_gutzwiller_exchange!(
-    cache::GutzwillerExchangeCache,
-    i::Int,
-    j::Int;
-    rebuild_after::Integer=64,
-)
-    rebuild_after > 0 || throw(ArgumentError("rebuild_after must be positive"))
-    amplitude_ratio = gutzwiller_exchange_ratio(cache, i, j)
-    iszero(amplitude_ratio) && throw(ArgumentError(
-        "cannot accept an exchange with a zero wavefunction-amplitude ratio",
-    ))
-    alternative_rows = collect(_gutzwiller_exchange_rows(cache, i, j))
-    sites = [i, j]
-    update_matrix = cache.orbital_action[alternative_rows, sites]
-    old_rows = cache.selected_rows[sites]
-    row_changes = cache.orbitals[alternative_rows, :] - cache.orbitals[old_rows, :]
-    changes_times_inverse = row_changes * cache.inverse_slater
-    solved_update = update_matrix \ changes_times_inverse
-
-    cache.inverse_slater .-=
-        cache.inverse_slater[:, sites] * solved_update
-    cache.orbital_action .-=
-        cache.orbital_action[:, sites] * solved_update
-    cache.selected_rows[sites] .= alternative_rows
-    cache.configuration[i] = 1 - cache.configuration[i]
-    cache.configuration[j] = 1 - cache.configuration[j]
-    cache.log_amplitude += log(amplitude_ratio)
-    cache.accepted_since_rebuild += 1
-
-    if cache.accepted_since_rebuild >= rebuild_after
-        _rebuild_gutzwiller_exchange_cache!(cache)
-    end
-    return cache
-end
-
 get_amplitude(state::AbstractGutzwillerProjectedState, spin_configuration::Vector{Int}) =
     gutzwiller_amplitude(state, spin_configuration)
 
@@ -286,8 +158,7 @@ function get_prob(
        any(!haskey(spin_configuration, site) for site in 1:state.N)
         throw(ArgumentError(
             "partial probabilities of a Gutzwiller-projected state are not " *
-            "available from the sequential PEPS sampler; use fixed-sector " *
-            "Metropolis sampling",
+            "available through this interface",
         ))
     end
     configuration = [spin_configuration[site] for site in 1:state.N]
@@ -355,6 +226,195 @@ mutable struct ParameterizedGutzwillerProjectedState <: AbstractGutzwillerProjec
     N::Int
     Nup::Union{Nothing,Int}
     gap_tolerance::Float64
+end
+
+"""
+    ProjectedGaussianSchurCache(state; order=1:state.N)
+
+Direct-sampling cache for a parameterized Gutzwiller-projected Slater state.
+The parent Slater correlation matrix is conditioned one spin-orbital at a time
+and shrunk after every physical spin decision. If `state.Nup` is fixed,
+branches that cannot reach that sector are assigned zero proposal weight.
+"""
+mutable struct ProjectedGaussianSchurCache
+    correlation_matrix::Matrix{ComplexF64}
+    remaining_sites::Vector{Int}
+    target_Nup::Union{Nothing,Int}
+    measured_up::Int
+end
+
+const _PROJECTED_SCHUR_PROBABILITY_TOLERANCE = 10sqrt(eps(Float64))
+
+function ProjectedGaussianSchurCache(
+    state::ParameterizedGutzwillerProjectedState;
+    order::AbstractVector{<:Integer}=collect(1:state.N),
+)
+    length(order) == state.N || throw(DimensionMismatch(
+        "sampling order must contain $(state.N) sites, got $(length(order))",
+    ))
+    sites = collect(Int, order)
+    sort(sites) == collect(1:state.N) || throw(ArgumentError(
+        "sampling order must be a permutation of 1:$(state.N)",
+    ))
+    modes = Vector{Int}(undef, 2state.N)
+    for (position, site) in enumerate(sites)
+        modes[2position - 1] = 2site - 1
+        modes[2position] = 2site
+    end
+    return ProjectedGaussianSchurCache(
+        Matrix{ComplexF64}(state.correlation_matrix[modes, modes]),
+        sites,
+        state.Nup,
+        0,
+    )
+end
+
+"""
+    projected_conditional_probabilities(cache; lookahead_depth=0)
+
+Return the two parent-Slater proposal weights for the next physical spin.
+Depth 0 uses the original one-site marginal. Depths 1 and 2 additionally sum
+over physical spin assignments on the next one or two sites in sampling order,
+discarding assignments that cannot reach `target_Nup`. This projects only the
+small lookahead window, not all remaining sites. The weights are not normalized;
+the sampler combines them with the PEPS weights and records the resulting
+normalized proposal in `logpc`. The final target amplitude is unchanged.
+"""
+function projected_conditional_probabilities(cache::ProjectedGaussianSchurCache; lookahead_depth=0)
+    _validate_lookahead_depth(lookahead_depth)
+    isempty(cache.remaining_sites) && throw(ArgumentError("all sites have already been measured"))
+    correlation = cache.correlation_matrix
+    up_density = real(correlation[1, 1])
+    down_density = real(correlation[2, 2])
+    coherence_squared = abs2(correlation[1, 2])
+    # Determinantal two-mode probabilities. Physical convention:
+    # 0 => up => (n_up,n_down)=(1,0), and 1 => down => (0,1).
+    probabilities = [
+        up_density * (1 - down_density) + coherence_squared,
+        (1 - up_density) * down_density + coherence_squared,
+    ]
+    tolerance = _PROJECTED_SCHUR_PROBABILITY_TOLERANCE
+    for index in eachindex(probabilities)
+        (-tolerance <= probabilities[index] <= 1 + tolerance) || throw(DomainError(
+            probabilities[index],
+            "the parent Slater correlation matrix gives an invalid spin probability",
+        ))
+        probabilities[index] = clamp(probabilities[index], 0.0, 1.0)
+    end
+    if !isnothing(cache.target_Nup) # tracks how many up spins have already been selected
+        sites_after = length(cache.remaining_sites) - 1
+        for spin in 0:1 # spin=0 => up, spin=1 => down
+            up_after = cache.measured_up + (spin == 0)
+            if up_after > cache.target_Nup || up_after + sites_after < cache.target_Nup
+                probabilities[spin + 1] = 0.0
+            end
+        end
+    end
+    if lookahead_depth > 0 && length(cache.remaining_sites) > 1
+        return _projected_window_probabilities(cache, lookahead_depth, probabilities)
+    end
+    return probabilities
+end
+
+function _validate_lookahead_depth(depth)
+    depth isa Integer && depth in 0:2 || throw(ArgumentError(
+        "lookahead_depth must be 0, 1, or 2, got $depth",
+    ))
+    return depth
+end
+
+function _projected_window_probabilities(cache, depth, one_site_probabilities)
+    window = min(depth + 1, length(cache.remaining_sites))
+    modes = 2window
+    # Gaussian occupation marginals only need this principal submatrix.
+    # Never copy/condition the full remaining correlation matrix for lookahead.
+    correlation = @view cache.correlation_matrix[1:modes, 1:modes]
+    measurement = Matrix{ComplexF64}(undef, modes, modes)
+    probabilities = zeros(Float64, 2)
+    sites_after = length(cache.remaining_sites) - window
+    for code in 0:(1 << window)-1
+        spin = code & 1
+        iszero(one_site_probabilities[spin + 1]) && continue
+        up_after = cache.measured_up + window - count_ones(code)
+        if !isnothing(cache.target_Nup) &&
+           (up_after > cache.target_Nup || up_after + sites_after < cache.target_Nup)
+            continue
+        end
+        copyto!(measurement, correlation)
+        for site in 1:window
+            local_spin = (code >> (site - 1)) & 1
+            # One occupied and one empty orbital per physical site.
+            empty_mode = 2site - local_spin
+            measurement[empty_mode, empty_mode] -= 1
+        end
+        # P(n_A) = (-1)^number_empty det(C_A - diag(1 - n_A)).
+        probability = (isodd(window) ? -1 : 1) * real(det(Hermitian(measurement)))
+        tolerance = _PROJECTED_SCHUR_PROBABILITY_TOLERANCE
+        (-tolerance <= probability <= 1 + tolerance) || throw(DomainError(
+            probability, "invalid Gaussian lookahead occupation probability",
+        ))
+        probabilities[spin + 1] += clamp(probability, 0.0, 1.0)
+    end
+    sum(probabilities) > 0 || throw(ArgumentError(
+        "no positive-probability completion of the projected lookahead window",
+    ))
+    return probabilities
+end
+
+"""
+    condition_projected_gaussian!(cache, spin)
+
+Commit a physical-spin choice to a projected-state direct-sampling cache.
+"""
+function condition_projected_gaussian!(
+    cache::ProjectedGaussianSchurCache,
+    spin::Integer,
+)
+    spin in (0, 1) || throw(ArgumentError("spin must be 0 or 1, got $spin"))
+    probabilities = projected_conditional_probabilities(cache)
+    probabilities[spin + 1] > 0 || throw(ArgumentError(
+        "cannot condition on a zero-probability physical spin",
+    ))
+
+    correlation = cache.correlation_matrix
+    size(correlation, 1) >= 2 || error(
+        "the projected Gaussian cache must contain two modes per remaining site",
+    )
+    if size(correlation, 1) == 2
+        cache.correlation_matrix = zeros(ComplexF64, 0, 0)
+    else
+        # Condition on the complete physical-site event in one block. For an
+        # occupied mode the measurement block contains C_aa; for an empty mode
+        # it contains C_aa - 1. Its Schur complement gives the correlation
+        # matrix of the remaining modes. This avoids the potentially tiny and
+        # ill-conditioned intermediate probability produced by two sequential
+        # one-mode updates.
+        measurement_block = Matrix(@view correlation[1:2, 1:2])
+        empty_mode = 2 - spin # spin 0 => down empty; spin 1 => up empty
+        measurement_block[empty_mode, empty_mode] -= 1
+        cross_column = Matrix(@view correlation[3:end, 1:2])
+        cross_row = Matrix(@view correlation[1:2, 3:end])
+        remaining = Matrix(@view correlation[3:end, 3:end])
+        conditioned = remaining - cross_column * (measurement_block \ cross_row)
+        conditioned = (conditioned + adjoint(conditioned)) / 2
+
+        # Remove harmless diagonal roundoff immediately so it cannot accumulate
+        # over the remaining physical sites. Larger violations still indicate a
+        # genuinely unstable update and are rejected.
+        tolerance = _PROJECTED_SCHUR_PROBABILITY_TOLERANCE
+        for mode in axes(conditioned, 1)
+            density = real(conditioned[mode, mode])
+            (-tolerance <= density <= 1 + tolerance) || throw(DomainError(
+                density,
+                "conditioning produced an invalid parent-Slater density",
+            ))
+            conditioned[mode, mode] = clamp(density, 0.0, 1.0)
+        end
+        cache.correlation_matrix = conditioned
+    end
+    cache.measured_up += spin == 0
+    popfirst!(cache.remaining_sites)
+    return probabilities[spin + 1]
 end
 
 function _projected_gaussian_orbital_data(
@@ -565,21 +625,6 @@ function gutzwiller_log_gradient(
     end
     selected_slater = state.occupied_orbitals[rows, :]
     return _gutzwiller_log_gradient(state, rows, inv(selected_slater))
-end
-
-function gutzwiller_log_gradient(
-    state::ParameterizedGutzwillerProjectedState,
-    cache::GutzwillerExchangeCache,
-)
-    length(cache.configuration) == state.N || throw(DimensionMismatch(
-        "the exchange cache contains $(length(cache.configuration)) sites, " *
-        "but the projected Gaussian state contains $(state.N)",
-    ))
-    return _gutzwiller_log_gradient(
-        state,
-        cache.selected_rows,
-        cache.inverse_slater,
-    )
 end
 
 function _gutzwiller_log_gradient(
