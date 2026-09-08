@@ -1490,7 +1490,7 @@ function bogoliubov(H::Hermitian; tol=nothing)
         else
             # Exact zero modes: the E = 0 eigenspace is mapped onto itself by C and makes [X  C(X)] rank
             # deficient, so we rebuild a particle-hole symmetric (Majorana) basis and pair them into fermions.
-            X = hcat(X, _zero_mode_fermions(M0[:, zero_idx], _ph_conj, n_zero_pairs; tol=zero_tol))
+            X = hcat(X, _zero_mode_fermions(M0[:, zero_idx], _ph_conj, n_zero_pairs))
         end
     end
 
@@ -1623,12 +1623,14 @@ function skew_canonical_form(P::AbstractMatrix)
 
     E, Φ = eigen(Hermitian(W); sortby = (x -> -real(x)))
     alphas = sqrt.(abs.(E))
-    tol = 1e-7
+    T = real(float(eltype(P)))
+    alpha_scale = max(one(T), maximum(alphas))
+    alpha_tol = 10sqrt(eps(T)) * alpha_scale
 
     # sort indices by magnitude descending to make pairing stable
     idx_sorted = sortperm(alphas, rev = true)
-    nonzero_idx = [i for i in idx_sorted if !isapprox(alphas[i], 0.0; atol=tol)]
-    zero_idx = [i for i in idx_sorted if isapprox(alphas[i], 0.0; atol=tol)]
+    nonzero_idx = [i for i in idx_sorted if !isapprox(alphas[i], 0.0; atol=alpha_tol)]
+    zero_idx = [i for i in idx_sorted if isapprox(alphas[i], 0.0; atol=alpha_tol)]
 
     # ensure we have an even number of nonzero modes (otherwise pairing impossible)
     if isodd(length(nonzero_idx))

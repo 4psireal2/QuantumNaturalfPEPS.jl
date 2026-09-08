@@ -109,13 +109,28 @@ end
         shift = particle_block[1, 1] - Haux[1, 1]
         @test particle_block ≈ Haux + shift * I atol=1e-12
 
-        gradient_result = QuantumNaturalfPEPS.Zygote.gradient(parameters) do trial_parameters
-            H = Matrix(state.H_BdG_func(trial_parameters, state.N))
-            return real(sum(abs2, H))
+        dHs = QuantumNaturalfPEPS.build_H_BdG_derivatives(state)
+
+        @test length(dHs) == length(parameters)
+
+        T = real(float(eltype(parameters)))
+        relative_step = cbrt(eps(T))
+
+        for a in eachindex(parameters)
+            step = relative_step * max(one(T), abs(parameters[a]))
+
+            parameters_plus = copy(parameters)
+            parameters_minus = copy(parameters)
+            parameters_plus[a] += step
+            parameters_minus[a] -= step
+
+            H_plus = Matrix(state.H_BdG_func(parameters_plus, state.N))
+            H_minus = Matrix(state.H_BdG_func(parameters_minus, state.N))
+            dH_finite_difference = (H_plus - H_minus) / (2step)
+
+            @test all(isfinite, dHs[a])
+            @test dHs[a] ≈ dH_finite_difference rtol=1e-8 atol=1e-10
         end
-        gradient = gradient_result[1]
-        @test length(gradient) == length(parameters)
-        @test all(isfinite, gradient)
 
         projected = gutzwiller_project(state; Nup=N ÷ 2)
         @test projected isa ParameterizedGutzwillerProjectedState
