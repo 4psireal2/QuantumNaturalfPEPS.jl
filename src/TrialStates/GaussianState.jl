@@ -2246,6 +2246,16 @@ end
 
 # samples from ρ_r and updates pc
 function sample_ρr(GS::GaussianState, S, r, c, M_cache::OccupationProjectorCache)
+    """
+    Computes and samples the occupation probability at site (r,c), conditioned on all
+    sites previously sampled in the row-major order. Then updates the occupation projector 
+    cache with the drawn occupation. No ρr is constructed. The function's name follows the multiple 
+    dispatch feature such that it iscalled by get_sample(GS) for standalone Gaussian sampling.
+
+    Params:
+    - M_cache.M_j: stores projectos for previously sampled sites and the trial occupation of site_idx
+    - S : contains occupations of sites preceding (r,c) in the row-major sampling order 
+    """
     n_measured = (r - 1) * size(S, 2) + c
     site_idx = (c - 1) * size(S, 1) + r # true column-major linear index
 
