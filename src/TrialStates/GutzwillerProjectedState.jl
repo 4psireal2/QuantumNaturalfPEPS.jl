@@ -652,21 +652,15 @@ function _gutzwiller_log_gradient(
     X = occupied * transpose(response_weights) * adjoint(unoccupied)
     number_of_modes = state.number_of_modes
 
-    function contracted_hamiltonian(η)
-        H_BdG = Matrix(state.H_BdG_func(η, number_of_modes))
-        particle_block = @view H_BdG[1:number_of_modes, 1:number_of_modes]
-        return sum(transpose(X) .* particle_block)
-    end
-
-    real_gradient = Zygote.gradient(
-        η -> real(contracted_hamiltonian(η)),
+    dHs = build_H_BdG_derivatives(
+        state.H_BdG_func,
         parameters,
-    )[1]
-    imaginary_gradient = Zygote.gradient(
-        η -> imag(contracted_hamiltonian(η)),
-        parameters,
-    )[1]
-    return ComplexF64.(real_gradient .+ im .* imaginary_gradient)
+        number_of_modes,
+    )
+    return ComplexF64[
+        sum(transpose(X) .* @view(dH[1:number_of_modes, 1:number_of_modes]))
+        for dH in dHs
+    ]
 end
 
 function get_Ok(

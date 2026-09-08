@@ -135,6 +135,20 @@ end
         projected = gutzwiller_project(state; Nup=N ÷ 2)
         @test projected isa ParameterizedGutzwillerProjectedState
         @test length(QuantumNaturalfPEPS.Parameters(projected)) == length(parameters)
+
+        if name == :stripe
+            cache = QuantumNaturalfPEPS.ProjectedGaussianSchurCache(projected)
+            spin_configuration = Int[]
+            while !isempty(cache.remaining_sites)
+                probabilities = projected_conditional_probabilities(cache)
+                spin = argmax(probabilities) - 1
+                push!(spin_configuration, spin)
+                QuantumNaturalfPEPS.condition_projected_gaussian!(cache, spin)
+            end
+            gradient = gutzwiller_log_gradient(projected, spin_configuration)
+            @test length(gradient) == length(parameters)
+            @test all(isfinite, gradient)
+        end
     end
 
     @test_throws ArgumentError y_hopping_fields(4, 6, eta_Y)
