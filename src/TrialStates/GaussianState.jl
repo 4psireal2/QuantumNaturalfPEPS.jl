@@ -1626,6 +1626,7 @@ function skew_canonical_form(P::AbstractMatrix)
     T = real(float(eltype(P)))
     alpha_scale = max(one(T), maximum(alphas))
     alpha_tol = 10sqrt(eps(T)) * alpha_scale
+    basis_tol = 10sqrt(eps(T))
 
     # sort indices by magnitude descending to make pairing stable
     idx_sorted = sortperm(alphas, rev = true)
@@ -1651,7 +1652,7 @@ function skew_canonical_form(P::AbstractMatrix)
         end
 
         # If the vector is fully spanned by previous pairs, skip it
-        if norm(v) < tol
+        if norm(v) < basis_tol
             continue
         end
 
@@ -1669,7 +1670,7 @@ function skew_canonical_form(P::AbstractMatrix)
         for prev in 1:(pos-1)
             v -= S[:, prev] * (S[:, prev]' * v)
         end
-        if norm(v) < tol
+        if norm(v) < basis_tol
             continue
         end
         S[:, pos] = v / norm(v)
@@ -1688,7 +1689,7 @@ function skew_canonical_form(P::AbstractMatrix)
     X = perm_mat' * X * perm_mat
     S = S * perm_mat
 
-    X[abs.(X) .< tol] .= 0.0
+    X[abs.(X) .< alpha_tol] .= 0.0
 
     return S, X
 end
