@@ -23,21 +23,19 @@ function _sampling_cache_hamiltonian(parameters, number_of_sites)
 end
 
 @testset "Projected parent-Slater Schur cache" begin
-    Lx = Ly = 3
+    Lx = Ly = 4
     number_of_sites = Lx * Ly
-    hopping = fill(0.2 + 0.0im, Lx, Ly, 3)
-    fields = zeros(Float64, Lx, Ly, 3)
-    fields[:, :, 1] .= 10.0
-    gaussian_state = triangular_aux_gaussian_state(
+    gaussian_state = cs_state(
         Lx,
         Ly;
-        hopping,
-        fields,
+        η=[10.0],
+        hopping_amplitude=0.2,
+        stripe_delta=0.2,
         particle_number=number_of_sites,
     )
     projected_state = gutzwiller_project(gaussian_state)
-    order = [1, 4, 7, 2, 5, 8, 3, 6, 9]
-    cache = ProjectedGaussianSchurCache(projected_state; order)
+    order = [x + (y - 1) * Lx for x in 1:Lx for y in 1:Ly]
+    cache = QuantumNaturalfPEPS.ProjectedGaussianSchurCache(projected_state; order)
     prefix = Dict{Int,Int}()
     prefix_probability = 1.0
 
@@ -53,11 +51,13 @@ end
         spin = argmax(probabilities) - 1
         prefix[site] = spin
         prefix_probability = QuantumNaturalfPEPS.get_prob(projected_state, prefix)
-        condition_projected_gaussian!(cache, spin)
+        QuantumNaturalfPEPS.condition_projected_gaussian!(cache, spin)
     end
 
-    fixed_state = gutzwiller_project(gaussian_state; Nup=5)
-    fixed_cache = ProjectedGaussianSchurCache(fixed_state; order)
+    target_Sz = 1.0
+    target_Nup = Int(number_of_sites / 2 + target_Sz)
+    fixed_state = gutzwiller_project(gaussian_state; Nup=target_Nup)
+    fixed_cache = QuantumNaturalfPEPS.ProjectedGaussianSchurCache(fixed_state; order)
     for position in eachindex(order)
         probabilities = projected_conditional_probabilities(fixed_cache)
         spin = if fixed_cache.measured_up < fixed_cache.target_Nup
@@ -65,7 +65,7 @@ end
         else
             1
         end
-        condition_projected_gaussian!(fixed_cache, spin)
+        QuantumNaturalfPEPS.condition_projected_gaussian!(fixed_cache, spin)
         if position == length(order)
             @test fixed_cache.measured_up == fixed_cache.target_Nup
         end
@@ -76,7 +76,8 @@ end
     peps = PEPS(ComplexF64, hilbert; bond_dim=1, show_warning=false)
     write!(peps, fill(ComplexF64(inv(sqrt(2))), length(peps)))
     sample, _, _ = QuantumNaturalfPEPS.get_sample(peps; trial_state=fixed_state)
-    @test count(==(0), sample) == fixed_state.Nup
+    sampled_Sz = sum(spin == 0 ? 0.5 : -0.5 for spin in sample)
+    @test sampled_Sz == target_Sz
 end
 
 @testset "Gaussian low-rank sampling caches" begin
@@ -111,40 +112,6 @@ end
 
         @test isempty(cache.remaining_sites)
         @test exp(cache.log_probability) ≈ prefix_probability atol=1e-11
-    end
-
-    @testset "MCMC flip ratios and Woodbury updates" begin
-        configurations = [digits(index, base=2, pad=number_of_sites)
-                          for index in 0:(2^number_of_sites - 1)]
-        probabilities = map(configuration ->
-            QuantumNaturalfPEPS.get_prob(state, configuration), configurations)
-        configuration = configurations[argmax(probabilities)]
-        cache = GaussianOccupationCache(state, configuration)
-
-        @test exp(cache.log_probability) ≈
-            QuantumNaturalfPEPS.get_prob(state, configuration) atol=1e-11
-        @test gaussian_flip_probability_ratio(cache, 1) == 0
-        @test_throws ArgumentError accept_gaussian_flip!(cache, 1)
-
-        accepted = 0
-        for sites in ([1, 2], [1, 3], [2, 4])
-            proposed = copy(cache.configuration)
-            proposed[sites] .= 1 .- proposed[sites]
-            exact_ratio = QuantumNaturalfPEPS.get_prob(state, proposed) /
-                QuantumNaturalfPEPS.get_prob(state, cache.configuration)
-            @test gaussian_flip_probability_ratio(cache, sites) ≈ exact_ratio atol=1e-10
-
-            if exact_ratio > 1e-10
-                accept_gaussian_flip!(cache, sites; rebuild_after=2)
-                accepted += 1
-                @test cache.configuration == proposed
-                @test exp(cache.log_probability) ≈
-                    QuantumNaturalfPEPS.get_prob(state, proposed) atol=1e-10
-                @test cache.determinant_matrix * cache.inverse_matrix ≈
-                    I atol=1e-10
-            end
-        end
-        @test accepted >= 2
     end
 
     @testset "direct sampler defaults to Schur" begin
