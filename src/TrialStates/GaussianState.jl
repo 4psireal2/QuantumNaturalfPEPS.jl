@@ -202,9 +202,7 @@ function _triangular_aux_bdg_function(
             "$(6number_of_sites), got $(length(full_parameters))",
         ))
 
-        zero_Haux = zeros(ComplexF64, number_of_modes, number_of_modes)
-        H_buffer = Zygote.Buffer(zero_Haux)
-        copyto!(H_buffer, zero_Haux)
+        H_buffer = zeros(ComplexF64, number_of_modes, number_of_modes)
         for bond in bonds
             x, y = bond.source
             x2, y2 = bond.target
@@ -496,7 +494,7 @@ get_max_num_hopping_y_NN(Lx::Int, Ly::Int) = Lx * (Ly - 1)
 """
     build_H_BdG_derivatives(H_BdG_func::Function, η::AbstractVector{<:Number}, N::Int)
 
-Builds the derivative matrices dH/dη for the BdG Hamiltonian using automatic differentiation.
+Builds the derivative matrices dH/dη for the BdG Hamiltonian.
 Returns a vector of matrices corresponding to the derivatives with respect to each variational parameter in `η`
 
 `H_BdG_func` is assumed to be **affine** in `η`, i.e. `H(η) = A(η) + B(η̄) + H(0)` with `A`, `B` linear —
@@ -511,70 +509,26 @@ matching what the previous Zygote-based implementation returned.
 
 """
 function build_H_BdG_derivatives(H_BdG_func::Function, η::AbstractVector{<:Number}, N::Int)
-    dimH = 2 * N
-    n_entries = dimH * dimH
+    S = eltype(η)
+    e = zeros(S, length(η))
+    H0 = Matrix(H_BdG_func(e, N))   # affine offset H(0)
 
-    T = eltype(H_BdG_func(η, N))
-
-    dHs = Vector{Matrix{T}}(undef, length(η))
-    isempty(η) && return dHs
-    if eltype(η) <: Real && T <: Real
-        f_real_output = θ -> vec(Matrix(H_BdG_func(θ, N)))
-        J = Zygote.jacobian(f_real_output, η)[1]
-
-        for a in eachindex(η)
-            dHs[a] = reshape(@view(J[:, a]), dimH, dimH)
+    dHs = Vector{Matrix{eltype(H0)}}(undef, length(η))
+    for a in eachindex(η)
+        e[a] = one(S)
+        dH = Matrix(H_BdG_func(e, N)) .- H0         # ∂H/∂Re ηₐ
+        if S <: Complex
+            e[a] = im * one(S)
+            dH_im = Matrix(H_BdG_func(e, N)) .- H0  # ∂H/∂Im ηₐ
+            dH = 0.5 .* (dH .- im .* dH_im)         # Wirtinger ∂H/∂ηₐ
         end
-    elseif eltype(η) <: Real
-        function f_real_parameters(θ)
-            H_vec = vec(Matrix(H_BdG_func(θ, N)))
-            return vcat(real.(H_vec), imag.(H_vec))
-        end
-        J = Zygote.jacobian(f_real_parameters, η)[1]
-
-        for a in eachindex(η)
-            dHs[a] = reshape(@view(J[1:n_entries, a]), dimH, dimH) .+
-                      im .* reshape(@view(J[n_entries+1:2n_entries, a]), dimH, dimH)
-        end
-    elseif eltype(η) <: Complex
-        η_reim = vcat(real.(η), imag.(η))
-
-        function f_complex_parameters(x)
-            n = length(x) ÷ 2
-            θ = ComplexF64.(x[1:n] .+ im .* x[n+1:end])
-
-            H_vec = vec(Matrix(H_BdG_func(θ, N)))
-
-            return vcat(real.(H_vec), imag.(H_vec))
-        end
-
-        J = Zygote.jacobian(f_complex_parameters, η_reim)[1]
-
-        nη = length(η)
-
-        for a in 1:nη
-            # derivative wrt Re η_a
-            dH_re = reshape(@view(J[1:n_entries, a]), dimH, dimH) .+
-                    im .* reshape(@view(J[n_entries+1:2n_entries, a]), dimH, dimH)
-
-            # derivative wrt Im η_a
-            dH_im = reshape(@view(J[1:n_entries, nη+a]), dimH, dimH) .+
-                    im .* reshape(@view(J[n_entries+1:2n_entries, nη+a]), dimH, dimH)
-
-            # Correct Wirtinger derivative
-            dH = 0.5 .* (dH_re .- im .* dH_im)
-
-            # enforce Hermiticity only numerically
-            # dH = 0.5 .* (dH + dH')
-
-            dHs[a] = dH
-        end
-    else
-        throw(ArgumentError("unsupported parameter element type $(eltype(η))"))
+        e[a] = zero(S)
+        dHs[a] = dH
     end
 
     return dHs
 end
+
 function build_H_BdG_derivatives(GS::GaussianState)
     return build_H_BdG_derivatives(GS.H_BdG_func, GS.η, GS.N)
 end
@@ -1490,7 +1444,7 @@ Degenerate spectra are handled robustly by splitting the modes into two groups:
 This guarantees the canonical (anti)commutation relations by construction, so the resulting `M` is always a
 valid Bogoliubov transformation and is well-conditioned for the subsequent Bloch-Messiah decomposition.
 """
-function bogoliubov(H::Hermitian)
+function bogoliubov(H::Hermitian; tol=nothing)
     N = div(size(H, 1), 2)
 
     # Particle-hole conjugation C: [X_u; X_v] -> [conj(X_v); conj(X_u)]. C is the antiunitary
@@ -1536,7 +1490,7 @@ function bogoliubov(H::Hermitian)
         else
             # Exact zero modes: the E = 0 eigenspace is mapped onto itself by C and makes [X  C(X)] rank
             # deficient, so we rebuild a particle-hole symmetric (Majorana) basis and pair them into fermions.
-            X = hcat(X, _zero_mode_fermions(M0[:, zero_idx], _ph_conj, n_zero_pairs))
+            X = hcat(X, _zero_mode_fermions(M0[:, zero_idx], _ph_conj, n_zero_pairs; tol=zero_tol))
         end
     end
 
@@ -1548,9 +1502,9 @@ function bogoliubov(H::Hermitian)
     # E = diag(M' H M) so that E[k] = -E[k+N] exactly.
     E = real.(diag(M' * H * M))
 
-    @assert norm(M' * M - I, Inf) < residual_tol(M) "Bogoliubov M is not unitary."
-    @assert norm(U'U + V'V - I, Inf) < residual_tol(U, V) "Bogoliubov blocks violate U'U + V'V = I."
-    @assert norm(transpose(U) * V + transpose(V) * U, Inf) < residual_tol(U, V) "Bogoliubov blocks violate UᵀV + VᵀU = 0."
+    @assert norm(M' * M - I, Inf) < (isnothing(tol) ? residual_tol(M) : tol) "Bogoliubov M is not unitary."
+    @assert norm(U'U + V'V - I, Inf) < (isnothing(tol) ? residual_tol(U, V) : tol) "Bogoliubov blocks violate U'U + V'V = I."
+    @assert norm(transpose(U) * V + transpose(V) * U, Inf) < (isnothing(tol) ? residual_tol(U, V) : tol) "Bogoliubov blocks violate UᵀV + VᵀU = 0."
 
     return E, M
 end
@@ -1596,7 +1550,7 @@ basis exactly (to machine precision) and robustly via a single real symmetric ei
 Majoranas are then paired into complex fermions `c† = (γ₁ + i γ₂)/√2`, whose columns, together with their
 `C`-images, satisfy the CAR exactly.
 """
-function _zero_mode_fermions(Z::AbstractMatrix, _ph_conj, n_pairs::Int)
+function _zero_mode_fermions(Z::AbstractMatrix, _ph_conj, n_pairs::Int; tol=nothing)
     # Re-orthonormalize the zero-mode eigenvectors. For a degenerate eigenvalue cluster (all the
     # zero modes share E = 0), LAPACK's MRRR driver (syevr, used by `eigen` for real-symmetric
     # matrices) can return eigenvectors that span the correct subspace but are not mutually
@@ -1611,7 +1565,7 @@ function _zero_mode_fermions(Z::AbstractMatrix, _ph_conj, n_pairs::Int)
     # so T(w) = A * conj(w) is an antiunitary involution (T² = I).
     A = Z' * _ph_conj(Z)
     A = (A + transpose(A)) / 2 # enforce the exact symmetry expected of a PH involution
-    @assert norm(A' * A - I, Inf) < residual_tol(A) "Particle-hole operator is not unitary on the zero-mode subspace."
+    @assert norm(A' * A - I, Inf) < (isnothing(tol) ? residual_tol(A) : tol) "Particle-hole operator is not unitary on the zero-mode subspace."
 
     dim = size(A, 1) # = 2 * n_pairs
     # Real representation of T on (Re w, Im w): writing w = wr + i·wi and A = Ar + i·Ai,
@@ -1831,8 +1785,8 @@ function bloch_messiah_decomposition(M::AbstractMatrix)
     permutation = sortperm(E_Q; rev=true)
     E_Q = E_Q[permutation]
     B = B[:, permutation]
-    @assert norm(B' * B - I, Inf) < 1e-10
-    @assert norm(B * B' - I, Inf) < 1e-10
+    @assert norm(B' * B - I, Inf) < residual_tol(B)
+    @assert norm(B * B' - I, Inf) < residual_tol(B)
     # Q_bar = real(B'*Q*B)
     P_bar = B'*P*conj.(B)
     @assert norm(P_bar + transpose(P_bar), Inf) < residual_tol(P_bar) "P_bar should be skew-symmetric"
@@ -1881,19 +1835,19 @@ function bloch_messiah_decomposition(M::AbstractMatrix)
         S[idx, idx] = S_sub # Place the canonical transformation in the correct block of S
     end
 
-    @assert norm(S' * S - I, Inf) < 1e-10
-    @assert norm(S * S' - I, Inf) < 1e-10
+    @assert norm(S' * S - I, Inf) < residual_tol(S)
+    @assert norm(S * S' - I, Inf) < residual_tol(S)
 
     P_canonical = S' * P_bar * conj.(S)
 
     A = permute_zero_cols_to_end(P_canonical)
-    @assert norm(A' * A - I, Inf) < 1e-10
-    @assert norm(A * A' - I, Inf) < 1e-10
+    @assert norm(A' * A - I, Inf) < residual_tol(A)
+    @assert norm(A * A' - I, Inf) < residual_tol(A)
 
     D = B * S * A
     @assert norm(D' * D - I, Inf) < residual_tol(D) "D should be unitary"
 
-    @assert isapprox(D'*P*conj(D), D'*conj(V)*transpose(U)*conj(D); atol=1e-10)
+    @assert norm(D'*P*conj(D) - D'*conj(V)*transpose(U)*conj(D), Inf) < residual_tol(D, P)
 
     F = MatrixFactorizations.rq(D' * U)
     R = Matrix(F.R)
