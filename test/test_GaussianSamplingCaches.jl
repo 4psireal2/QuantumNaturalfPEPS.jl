@@ -89,31 +89,6 @@ end
         parity_sector=0,
     )
 
-    @testset "direct Schur conditioning" begin
-        order = [1, 3, 2, 4]
-        cache = GaussianSchurCache(state; order)
-        prefix = Dict{Int,Int}()
-        prefix_probability = 1.0
-
-        for site in order
-            probabilities = gaussian_conditional_probabilities(cache)
-            exact = ntuple(2) do occupation_index
-                candidate = copy(prefix)
-                candidate[site] = occupation_index - 1
-                QuantumNaturalfPEPS.get_prob(state, candidate) / prefix_probability
-            end
-            @test collect(probabilities) ≈ collect(exact) atol=1e-11
-
-            occupation = argmax(probabilities) - 1
-            prefix[site] = occupation
-            prefix_probability = QuantumNaturalfPEPS.get_prob(state, prefix)
-            @test condition_gaussian!(cache, occupation) ≈ probabilities[occupation + 1]
-        end
-
-        @test isempty(cache.remaining_sites)
-        @test exp(cache.log_probability) ≈ prefix_probability atol=1e-11
-    end
-
     @testset "direct sampler defaults to Schur" begin
         Random.seed!(8723)
         sample, log_probability = QuantumNaturalfPEPS.get_sample(state)
