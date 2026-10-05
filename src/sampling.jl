@@ -170,19 +170,19 @@ function sample_ρr(
 end
 
 _direct_sampling_cache(::AbstractTrialState, _) = nothing
-_direct_sampling_cache(state::ParameterizedGutzwillerProjectedState, order) =
+_direct_sampling_cache(state::AbstractGutzwillerProjectedState, order) =
     ProjectedGaussianSchurCache(state; order)
 _direct_sampling_cache(state::FrozenTrialState, order) =
     _direct_sampling_cache(state.state, order)
 
 _supports_projected_lookahead(::AbstractTrialState) = false
-_supports_projected_lookahead(::ParameterizedGutzwillerProjectedState) = true
+_supports_projected_lookahead(::AbstractGutzwillerProjectedState) = true
 _supports_projected_lookahead(state::FrozenTrialState) = _supports_projected_lookahead(state.state)
 
 function _validate_direct_lookahead(trial_state, depth)
     _validate_lookahead_depth(depth)
     depth == 0 || _supports_projected_lookahead(trial_state) || throw(ArgumentError(
-        "lookahead_depth > 0 requires a ParameterizedGutzwillerProjectedState " *
+        "lookahead_depth > 0 requires a Gutzwiller-projected trial state " *
         "(optionally wrapped in FrozenTrialState)",
     ))
     return depth

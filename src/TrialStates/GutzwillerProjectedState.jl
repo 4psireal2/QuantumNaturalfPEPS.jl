@@ -4,7 +4,9 @@
 Represent the single-occupancy Gutzwiller projection of a half-filled Slater
 determinant. `occupied_orbitals` must be a `2N × N` matrix whose columns are the
 occupied spin orbitals in the interleaved one-particle basis
-`(1↑, 1↓, 2↑, 2↓, ...)`.
+`(1↑, 1↓, 2↑, 2↓, ...)`. Its columns must have full rank but need not be
+orthonormal. The normalized parent-Slater correlation matrix is cached for
+direct sampling.
 
 If `Nup` is specified, amplitudes outside that fixed-magnetization sector are
 set to zero. Here spin configurations use the PEPS convention `0 => ↑` and
@@ -16,6 +18,7 @@ abstract type AbstractGutzwillerProjectedState <: AbstractTrialState end
 
 struct FixedGutzwillerProjectedState{T<:Number} <: AbstractGutzwillerProjectedState
     occupied_orbitals::Matrix{T}
+    correlation_matrix::Matrix{T}
     N::Int
     Nup::Union{Nothing,Int}
 end
@@ -44,7 +47,27 @@ function FixedGutzwillerProjectedState(
     T = float(eltype(occupied_orbitals))
     orbitals = Matrix{T}(occupied_orbitals)
     all(isfinite, orbitals) || throw(ArgumentError("occupied_orbitals must be finite"))
-    return FixedGutzwillerProjectedState{T}(orbitals, N, fixed_Nup)
+
+    # A Slater determinant only depends on the occupied subspace. Construct its
+    # normalized one-body projector once so direct sampling does not need to
+    # repeat this factorization for every sample. Keep the original orbitals for
+    # amplitude evaluation, including their configuration-independent scale.
+    decomposition = svd(orbitals; full=false)
+    singular_scale = maximum(decomposition.S)
+    rank_tolerance = max(number_of_modes, number_occupied) *
+        eps(real(float(one(T)))) * singular_scale
+    minimum(decomposition.S) > rank_tolerance || throw(ArgumentError(
+        "occupied_orbitals must have full column rank",
+    ))
+    correlation_matrix = Matrix{T}(
+        decomposition.U * adjoint(decomposition.U),
+    )
+    return FixedGutzwillerProjectedState{T}(
+        orbitals,
+        correlation_matrix,
+        N,
+        fixed_Nup,
+    )
 end
 
 """
@@ -231,7 +254,7 @@ end
 """
     ProjectedGaussianSchurCache(state; order=1:state.N)
 
-Direct-sampling cache for a parameterized Gutzwiller-projected Slater state.
+Direct-sampling cache for a Gutzwiller-projected Slater state.
 The parent Slater correlation matrix is conditioned one spin-orbital at a time
 and shrunk after every physical spin decision. If `state.Nup` is fixed,
 branches that cannot reach that sector are assigned zero proposal weight.
@@ -246,7 +269,7 @@ end
 const _PROJECTED_SCHUR_PROBABILITY_TOLERANCE = 10sqrt(eps(Float64))
 
 function ProjectedGaussianSchurCache(
-    state::ParameterizedGutzwillerProjectedState;
+    state::AbstractGutzwillerProjectedState;
     order::AbstractVector{<:Integer}=collect(1:state.N),
 )
     length(order) == state.N || throw(DimensionMismatch(
@@ -417,6 +440,58 @@ function condition_projected_gaussian!(
     return probabilities[spin + 1]
 end
 
+# function _projected_gaussian_orbital_data(
+#     H_BdG_func::Function,
+#     parameters::AbstractVector{<:Number},
+#     number_of_modes::Integer,
+#     gap_tolerance::Real,
+# )
+#     iseven(number_of_modes) || throw(DimensionMismatch(
+#         "a spinful projected Gaussian state requires an even number of modes, " *
+#         "got $number_of_modes",
+#     ))
+#     number_of_sites = number_of_modes ÷ 2
+#     H_BdG = Matrix(H_BdG_func(parameters, number_of_modes))
+#     size(H_BdG) == (2number_of_modes, 2number_of_modes) || throw(DimensionMismatch(
+#         "the Gaussian BdG Hamiltonian must have size " *
+#         "$(2number_of_modes) × $(2number_of_modes), got $(size(H_BdG))",
+#     ))
+
+#     scale = max(maximum(abs, H_BdG), 1.0)
+#     pairing_block = @view H_BdG[1:number_of_modes, number_of_modes+1:end]
+#     maximum(abs, pairing_block) <= gap_tolerance * scale || throw(ArgumentError(
+#         "Gutzwiller projection currently requires a number-conserving Gaussian " *
+#         "state with a zero anomalous BdG block",
+#     ))
+#     particle_hamiltonian = Hermitian(H_BdG[1:number_of_modes, 1:number_of_modes])
+#     spectrum = eigen(particle_hamiltonian)
+#     number_occupied = count(<(-gap_tolerance), spectrum.values)
+#     number_zero = count(energy -> abs(energy) <= gap_tolerance, spectrum.values)
+#     number_zero == 0 || throw(ArgumentError(
+#         "the Gaussian Fermi level contains $number_zero modes within " *
+#         "gap_tolerance=$gap_tolerance",
+#     ))
+#     number_occupied == number_of_sites || throw(ArgumentError(
+#         "single-occupancy projection requires $number_of_sites occupied " *
+#         "spin-orbitals, but the Gaussian state contains $number_occupied; " *
+#         "the fixed chemical potential may have crossed a level",
+#     ))
+
+#     occupied = Matrix{ComplexF64}(spectrum.vectors[:, 1:number_of_sites])
+#     correlation_matrix = occupied * adjoint(occupied)
+#     unoccupied = Matrix{ComplexF64}(spectrum.vectors[:, number_of_sites+1:end])
+#     occupied_energies = Float64.(spectrum.values[1:number_of_sites])
+#     unoccupied_energies = Float64.(spectrum.values[number_of_sites+1:end])
+#     return (
+#         occupied,
+#         correlation_matrix,
+#         unoccupied,
+#         occupied_energies,
+#         unoccupied_energies,
+#     )
+# end
+
+#= 20.09 =#
 function _projected_gaussian_orbital_data(
     H_BdG_func::Function,
     parameters::AbstractVector{<:Number},
@@ -442,23 +517,32 @@ function _projected_gaussian_orbital_data(
     ))
     particle_hamiltonian = Hermitian(H_BdG[1:number_of_modes, 1:number_of_modes])
     spectrum = eigen(particle_hamiltonian)
-    number_occupied = count(<(-gap_tolerance), spectrum.values)
-    number_zero = count(energy -> abs(energy) <= gap_tolerance, spectrum.values)
-    number_zero == 0 || throw(ArgumentError(
-        "the Gaussian Fermi level contains $number_zero modes within " *
-        "gap_tolerance=$gap_tolerance",
-    ))
-    number_occupied == number_of_sites || throw(ArgumentError(
-        "single-occupancy projection requires $number_of_sites occupied " *
-        "spin-orbitals, but the Gaussian state contains $number_occupied; " *
-        "the fixed chemical potential may have crossed a level",
+    energies = spectrum.values
+    fermi_gap = energies[number_of_sites + 1] - energies[number_of_sites]
+
+    spectral_width = last(energies) - first(energies)
+    spectral_width > 0 || throw(ArgumentError(
+        "the auxiliary particle Hamiltonian has zero spectral width",
     ))
 
-    occupied = Matrix{ComplexF64}(spectrum.vectors[:, 1:number_of_sites])
+    relative_fermi_gap = fermi_gap / spectral_width
+
+    relative_fermi_gap > gap_tolerance || throw(ArgumentError(
+        "the relative Fermi gap is $relative_fermi_gap, which does not " *
+        "exceed gap_tolerance=$gap_tolerance",
+    ))
+
+    occupied = Matrix{ComplexF64}(
+        spectrum.vectors[:, 1:number_of_sites],
+    )
+    unoccupied = Matrix{ComplexF64}(
+        spectrum.vectors[:, number_of_sites+1:end],
+    )
+
     correlation_matrix = occupied * adjoint(occupied)
-    unoccupied = Matrix{ComplexF64}(spectrum.vectors[:, number_of_sites+1:end])
-    occupied_energies = Float64.(spectrum.values[1:number_of_sites])
-    unoccupied_energies = Float64.(spectrum.values[number_of_sites+1:end])
+    occupied_energies = Float64.(energies[1:number_of_sites])
+    unoccupied_energies = Float64.(energies[number_of_sites+1:end])
+
     return (
         occupied,
         correlation_matrix,
@@ -467,6 +551,7 @@ function _projected_gaussian_orbital_data(
         unoccupied_energies,
     )
 end
+#= 20.09 =#
 
 function ParameterizedGutzwillerProjectedState(
     gaussian_state::GaussianState;
@@ -640,10 +725,26 @@ function _gutzwiller_log_gradient(
     response_denominators =
         reshape(state.occupied_energies, 1, :) .-
         reshape(state.unoccupied_energies, :, 1)
-    minimum(abs, response_denominators) > state.gap_tolerance || throw(ArgumentError(
-        "occupied and unoccupied auxiliary levels are not separated by the " *
-        "requested gap tolerance",
-    ))
+    # minimum(abs, response_denominators) > state.gap_tolerance || throw(ArgumentError(
+    #     "occupied and unoccupied auxiliary levels are not separated by the " *
+    #     "requested gap tolerance",
+    # ))
+    
+    #= 20.09 =#
+    all_energies = vcat(
+    state.occupied_energies,
+    state.unoccupied_energies,
+    )
+    spectral_width = maximum(all_energies) - minimum(all_energies)
+    gap_threshold = state.gap_tolerance * spectral_width
+
+    minimum(abs, response_denominators) > gap_threshold ||
+        throw(ArgumentError(
+            "occupied and unoccupied auxiliary levels are not separated " *
+            "by the requested relative gap tolerance",
+        ))
+    #= 20.09 =#
+
 
     # If dV = Uu * ((Uu' * dH * V) ./ (εocc' - εunocc)), then
     # dlog(det(V[rows,:])) = tr(X*dH), with the X below.
@@ -652,21 +753,15 @@ function _gutzwiller_log_gradient(
     X = occupied * transpose(response_weights) * adjoint(unoccupied)
     number_of_modes = state.number_of_modes
 
-    function contracted_hamiltonian(η)
-        H_BdG = Matrix(state.H_BdG_func(η, number_of_modes))
-        particle_block = @view H_BdG[1:number_of_modes, 1:number_of_modes]
-        return sum(transpose(X) .* particle_block)
-    end
-
-    real_gradient = Zygote.gradient(
-        η -> real(contracted_hamiltonian(η)),
+    dHs = build_H_BdG_derivatives(
+        state.H_BdG_func,
         parameters,
-    )[1]
-    imaginary_gradient = Zygote.gradient(
-        η -> imag(contracted_hamiltonian(η)),
-        parameters,
-    )[1]
-    return ComplexF64.(real_gradient .+ im .* imaginary_gradient)
+        number_of_modes,
+    )
+    return ComplexF64[
+        sum(transpose(X) .* @view(dH[1:number_of_modes, 1:number_of_modes]))
+        for dH in dHs
+    ]
 end
 
 function get_Ok(

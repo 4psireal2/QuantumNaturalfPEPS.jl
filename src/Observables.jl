@@ -137,7 +137,7 @@ function weighted_mean_error(O_loc, importance_weights)
     # neff = abs2(sumw) / sum(abs2, w)
     std_err = sqrt(var / max(neff, 1e-12))
 
-    return μ, std_err, neff
+    return μ, std_err, var, neff
 end
 
 """

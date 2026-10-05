@@ -42,15 +42,18 @@ include("Distributed/Distributed.jl")
 export PEPS
 export write!
 export generate_Oks_and_Eks
-export triangular_torus_bonds, staggered_pi_flux_hoppings
+export triangular_torus_bonds, triangular_lattice_bonds, snake_site_index
+export staggered_pi_flux_hoppings
 export uniform_flux_staggered_pi_hoppings
 export hamiltonian_aux_triangular_torus
 export hamiltonian_J1J2_H
+export hamiltonian_J1J2_H_snake_mpo
 export monopole_state
 export y_hopping_fields, umbrella_hopping_fields
 export cs_hopping_fields
 export y_state, umbrella_state
-export cs_state
+export cs_state, free_state
+export triangular_spanning_tree, canonicalize_spanning_tree_phases
 export AbstractGutzwillerProjectedState, FixedGutzwillerProjectedState
 export ParameterizedGutzwillerProjectedState, gutzwiller_project
 export gutzwiller_amplitude, gutzwiller_weight, gutzwiller_log_gradient

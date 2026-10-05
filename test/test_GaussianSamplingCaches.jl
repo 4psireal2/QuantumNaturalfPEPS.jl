@@ -34,13 +34,33 @@ end
         particle_number=number_of_sites,
     )
     projected_state = gutzwiller_project(gaussian_state)
+    fixed_orbital_state = gutzwiller_project(projected_state.occupied_orbitals)
+    @test fixed_orbital_state isa FixedGutzwillerProjectedState
+    @test fixed_orbital_state.correlation_matrix ≈
+        projected_state.correlation_matrix atol=1e-12
+    changed_basis_state = gutzwiller_project(
+        projected_state.occupied_orbitals * Diagonal(1:number_of_sites),
+    )
+    @test changed_basis_state.correlation_matrix ≈
+        fixed_orbital_state.correlation_matrix atol=1e-12
+    rank_deficient_orbitals = copy(projected_state.occupied_orbitals)
+    rank_deficient_orbitals[:, end] .= rank_deficient_orbitals[:, 1]
+    @test_throws ArgumentError gutzwiller_project(rank_deficient_orbitals)
     order = [x + (y - 1) * Lx for x in 1:Lx for y in 1:Ly]
     cache = QuantumNaturalfPEPS.ProjectedGaussianSchurCache(projected_state; order)
+    fixed_orbital_cache = QuantumNaturalfPEPS.ProjectedGaussianSchurCache(
+        fixed_orbital_state;
+        order,
+    )
     prefix = Dict{Int,Int}()
     prefix_probability = 1.0
 
     for site in order
         probabilities = projected_conditional_probabilities(cache)
+        fixed_probabilities = projected_conditional_probabilities(
+            fixed_orbital_cache,
+        )
+        @test fixed_probabilities ≈ probabilities atol=1e-10
         exact = map(0:1) do spin
             candidate = copy(prefix)
             candidate[site] = spin
@@ -52,11 +72,16 @@ end
         prefix[site] = spin
         prefix_probability = QuantumNaturalfPEPS.get_prob(projected_state, prefix)
         QuantumNaturalfPEPS.condition_projected_gaussian!(cache, spin)
+        QuantumNaturalfPEPS.condition_projected_gaussian!(fixed_orbital_cache, spin)
     end
 
     target_Sz = 1.0
     target_Nup = Int(number_of_sites / 2 + target_Sz)
-    fixed_state = gutzwiller_project(gaussian_state; Nup=target_Nup)
+    fixed_state = gutzwiller_project(
+        projected_state.occupied_orbitals;
+        Nup=target_Nup,
+    )
+    @test fixed_state isa FixedGutzwillerProjectedState
     fixed_cache = QuantumNaturalfPEPS.ProjectedGaussianSchurCache(fixed_state; order)
     for position in eachindex(order)
         probabilities = projected_conditional_probabilities(fixed_cache)
@@ -75,7 +100,11 @@ end
     hilbert = siteinds("S=1/2", Lx, Ly)
     peps = PEPS(ComplexF64, hilbert; bond_dim=1, show_warning=false)
     write!(peps, fill(ComplexF64(inv(sqrt(2))), length(peps)))
-    sample, _, _ = QuantumNaturalfPEPS.get_sample(peps; trial_state=fixed_state)
+    sample, _, _ = QuantumNaturalfPEPS.get_sample(
+        peps;
+        trial_state=fixed_state,
+        lookahead_depth=1,
+    )
     sampled_Sz = sum(spin == 0 ? 0.5 : -0.5 for spin in sample)
     @test sampled_Sz == target_Sz
 end
