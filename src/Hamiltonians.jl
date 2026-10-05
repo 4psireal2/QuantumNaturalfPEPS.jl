@@ -104,6 +104,50 @@ function _triangular_open_bonds(
     return bonds
 end
 
+"""
+    triangular_lattice_bonds(Lx, Ly; boundary=:open, shear=0, shell=1)
+
+Return the triangular-lattice bonds used by the physical `J1-J2` Hamiltonian.
+This is the common bond-enumeration entry point for PEPS and one-dimensional
+snake-MPS representations. See [`triangular_torus_bonds`](@ref) for the bond
+metadata and the convention used for periodic boundaries.
+"""
+function triangular_lattice_bonds(
+    Lx::Integer,
+    Ly::Integer;
+    boundary::Symbol=:open,
+    shear::Integer=0,
+    shell::Integer=1,
+)
+    boundary in (:open, :periodic) || throw(ArgumentError(
+        "boundary must be :open or :periodic, got $boundary",
+    ))
+    shell in (1, 2) || throw(ArgumentError(
+        "shell must be 1 (nearest) or 2 (next-nearest), got $shell",
+    ))
+    if boundary == :open
+        iszero(shear) || throw(ArgumentError("shear is only supported with periodic boundaries"))
+        return _triangular_open_bonds(Lx, Ly; shell)
+    end
+    return triangular_torus_bonds(Lx, Ly; shear, shell)
+end
+
+"""
+    snake_site_index(site, Lx, Ly)
+
+Map a two-dimensional site `(x, y)` to a one-dimensional row-wise snake
+ordering. Odd rows run from left to right and even rows from right to left.
+"""
+function snake_site_index(site::Tuple{<:Integer,<:Integer}, Lx::Integer, Ly::Integer)
+    Lx >= 1 || throw(ArgumentError("Lx must be positive"))
+    Ly >= 1 || throw(ArgumentError("Ly must be positive"))
+    x, y = site
+    1 <= x <= Lx || throw(BoundsError((1:Lx, 1:Ly), site))
+    1 <= y <= Ly || throw(BoundsError((1:Lx, 1:Ly), site))
+    offset = (y - 1) * Lx
+    return offset + (isodd(y) ? x : Lx - x + 1)
+end
+
 _aux_triangular_hopping(hopping::Number, source, unwrapped_target, direction) = hopping # uniform hopping
 _aux_triangular_hopping(hopping::AbstractArray, source, unwrapped_target, direction) =
     hopping[source[1], source[2], direction] # site-dependent hopping
@@ -255,15 +299,8 @@ function hamiltonian_J1J2_H(
 
     hamiltonian = OpSum()
     spin_components = ("Sx", "Sy", "Sz")
-    function bonds(shell)
-        if boundary == :open
-            return _triangular_open_bonds(Lx, Ly; shell)
-        end
-        return triangular_torus_bonds(Lx, Ly; shear, shell)
-    end
-
     if !iszero(J1)
-        for bond in bonds(1)
+        for bond in triangular_lattice_bonds(Lx, Ly; boundary, shear, shell=1)
             for component in spin_components
                 hamiltonian += (
                     J1,
@@ -277,7 +314,7 @@ function hamiltonian_J1J2_H(
     end
 
     if !iszero(J2)
-        for bond in bonds(2)
+        for bond in triangular_lattice_bonds(Lx, Ly; boundary, shear, shell=2)
             for component in spin_components
                 hamiltonian += (
                     J2,
@@ -297,6 +334,60 @@ function hamiltonian_J1J2_H(
     end
 
     return hamiltonian
+end
+
+"""
+    hamiltonian_J1J2_H_snake_mpo(
+        sites, Lx, Ly; J1, J2, H, boundary=:open, shear=0
+    )
+
+Construct an MPS MPO for the same physical triangular-lattice Hamiltonian as
+[`hamiltonian_J1J2_H`](@ref), with two-dimensional coordinates mapped to a
+row-wise snake ordering by [`snake_site_index`](@ref).
+
+The exchange is written as
+`Sz_i Sz_j + (S+_i S-_j + S-_i S+_j)/2`, which is exactly equivalent to
+`Sx_i Sx_j + Sy_i Sy_j + Sz_i Sz_j` and preserves total `Sz` explicitly when
+the supplied site indices carry quantum numbers.
+"""
+function hamiltonian_J1J2_H_snake_mpo(
+    sites::AbstractVector{<:Index},
+    Lx::Integer,
+    Ly::Integer;
+    J1::Real,
+    J2::Real,
+    H::Real,
+    boundary::Symbol=:open,
+    shear::Integer=0,
+)
+    length(sites) == Lx * Ly || throw(DimensionMismatch(
+        "expected Lx*Ly = $(Lx * Ly) site indices, got $(length(sites))",
+    ))
+    # Validate the geometry even when both exchange couplings vanish.
+    triangular_lattice_bonds(Lx, Ly; boundary, shear, shell=1)
+
+    hamiltonian = OpSum()
+    function add_exchange!(coupling, shell)
+        iszero(coupling) && return
+        for bond in triangular_lattice_bonds(Lx, Ly; boundary, shear, shell)
+            i = snake_site_index(bond.source, Lx, Ly)
+            j = snake_site_index(bond.target, Lx, Ly)
+            hamiltonian += (coupling, "Sz", i, "Sz", j)
+            hamiltonian += (coupling / 2, "S+", i, "S-", j)
+            hamiltonian += (coupling / 2, "S-", i, "S+", j)
+        end
+        return
+    end
+    add_exchange!(J1, 1)
+    add_exchange!(J2, 2)
+
+    if !iszero(H)
+        for y in 1:Ly, x in 1:Lx
+            hamiltonian += (-H, "Sz", snake_site_index((x, y), Lx, Ly))
+        end
+    end
+
+    return MPO(hamiltonian, sites)
 end
 
 function hamiltonain_J1J2(J1, J2, Lx, Ly; operators=["X", "Y", "Z"])

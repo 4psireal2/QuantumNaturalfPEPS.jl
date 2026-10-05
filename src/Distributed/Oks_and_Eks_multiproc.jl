@@ -29,7 +29,8 @@ function generate_Oks_and_Eks_multiproc(peps::AbstractPEPS, ham_op::TensorOperat
     return Oks_and_Eks_
 end
 
-function Oks_and_Eks_multiproc(peps, ham_op, sample_nr; trial_state = IdentityState(dim(siteinds(peps)[1])), Oks=nothing, importance_weights=true, 
+function Oks_and_Eks_multiproc(peps, ham_op, sample_nr; trial_state = IdentityState(dim(siteinds(peps)[1])), Oks=nothing, 
+                               importance_weights=true, 
                                n_threads=Distributed.remotecall_fetch(()->Threads.nthreads(), workers()[1]),
                                timer=TimerOutput(),
                                kwargs...)
@@ -43,7 +44,10 @@ function Oks_and_Eks_multiproc(peps, ham_op, sample_nr; trial_state = IdentitySt
 
     seed = rand(UInt)
     # TODO: Send ham_op only once through the network
-    out = [Distributed.remotecall(() -> Oks_and_Eks_threaded(peps, ham_op, k; trial_state=trial_state, importance_weights=false, seed=seed + w, kwargs...), w) for w in workers()]
+    out = [Distributed.remotecall(() -> Oks_and_Eks_threaded(peps, ham_op, k; trial_state=trial_state, 
+                                                            importance_weights=false, 
+                                                            seed=seed + w, kwargs...), w) 
+                                                            for w in workers()]    
     
     eltype_ = eltype(peps)
     eltype_real = real(eltype_)
@@ -62,6 +66,7 @@ function Oks_and_Eks_multiproc(peps, ham_op, sample_nr; trial_state = IdentitySt
         i1 = k_eff * (i - 1) + 1
         i2 = k_eff * i
         out_dict = fetch(out_i)
+        # Eks[i1:i2], logψs[i1:i2], samples[i1:i2], logpcs[i1:i2], contract_dims[i1:i2] = out_dict[:Eks], out_dict[:logψs], out_dict[:samples], out_dict[:weights], out_dict[:contract_dims]
         Eks[i1:i2], logψs[i1:i2], samples[i1:i2], logpcs[i1:i2], contract_dims[i1:i2] = out_dict[:Eks], out_dict[:logψs], out_dict[:samples], out_dict[:logpcs], out_dict[:contract_dims]
         @timeit timer "copy Oks" Oks[:, i1:i2] .= transpose(out_dict[:Oks])
     end

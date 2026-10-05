@@ -1,6 +1,7 @@
 using Test
 using LinearAlgebra
 using ITensors
+using ITensorMPS
 using QuantumNaturalfPEPS
 
 @testset "Triangular-lattice Hamiltonians" begin
@@ -239,6 +240,40 @@ using QuantumNaturalfPEPS
             H=0,
             boundary=:cylindrical,
         )
+
+        @testset "snake-MPS MPO" begin
+            @test [snake_site_index((x, 1), 4, 4) for x in 1:4] == 1:4
+            @test [snake_site_index((x, 2), 4, 4) for x in 1:4] == [8, 7, 6, 5]
+            @test [snake_site_index((x, 3), 4, 4) for x in 1:4] == 9:12
+            @test_throws BoundsError snake_site_index((0, 1), 4, 4)
+
+            open_J1_bonds = triangular_lattice_bonds(4, 4; shell=1)
+            open_J2_bonds = triangular_lattice_bonds(4, 4; shell=2)
+            @test length(open_J1_bonds) == 33
+            @test length(open_J2_bonds) == 21
+            @test triangular_lattice_bonds(4, 4; boundary=:periodic, shell=1) ==
+                  triangular_torus_bonds(4, 4; shell=1)
+
+            sites = siteinds("S=1/2", 16; conserve_qns=true)
+            snake_mpo = hamiltonian_J1J2_H_snake_mpo(
+                sites,
+                4,
+                4;
+                J1=1.0,
+                J2=1 / 8,
+                H=0.0,
+            )
+            @test length(snake_mpo) == 16
+            @test all(hasind(snake_mpo[j], sites[j]) for j in eachindex(sites))
+            @test_throws DimensionMismatch hamiltonian_J1J2_H_snake_mpo(
+                sites[1:end-1],
+                4,
+                4;
+                J1=1.0,
+                J2=1 / 8,
+                H=0.0,
+            )
+        end
         @test_throws ArgumentError hamiltonian_J1J2_H(
             4,
             4;

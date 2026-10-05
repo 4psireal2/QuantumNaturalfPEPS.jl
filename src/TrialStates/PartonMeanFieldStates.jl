@@ -273,6 +273,7 @@ function _triangular_parton_state(
     particle_number::Integer=Lx * Ly,
     gap_tolerance::Real=1e-8,
     cache_gradients::Bool=false,
+    hopping_parameterization::Symbol=:fixed_phase,
 )
     number_of_sites = Lx * Ly
     number_of_modes = 2number_of_sites
@@ -309,7 +310,8 @@ function _triangular_parton_state(
         hopping_phases,
         chemical_potential,
         length(η),
-        expand_parameters,
+        expand_parameters;
+        hopping_parameterization,
     )
 
     return GaussianState(
@@ -545,5 +547,313 @@ function cs_state(
         particle_number,
         gap_tolerance,
         cache_gradients,
+    )
+end
+
+
+"""
+    triangular_spanning_tree(Lx, Ly; shear=0)
+
+Return deterministic nearest-neighbor bond indices for a breadth-first
+spanning tree rooted at site (1, 1). Indices refer to triangular_torus_bonds.
+"""
+function triangular_spanning_tree(Lx::Integer, Ly::Integer; shear::Integer=0)
+    bonds = triangular_torus_bonds(Lx, Ly; shear)
+    number_of_sites = Lx * Ly
+    adjacency = [Tuple{Int,Int}[] for _ in 1:number_of_sites]
+    for (bond_index, bond) in enumerate(bonds)
+        source = (bond.source[2] - 1) * Lx + bond.source[1]
+        target = (bond.target[2] - 1) * Lx + bond.target[1]
+        push!(adjacency[source], (target, bond_index))
+        push!(adjacency[target], (source, bond_index))
+    end
+
+    visited = falses(number_of_sites)
+    visited[1] = true
+    queue = [1]
+    tree_bonds = Int[]
+    next_site = 1
+    while next_site <= length(queue)
+        site = queue[next_site]
+        next_site += 1
+        for (neighbor, bond_index) in adjacency[site]
+            visited[neighbor] && continue
+            visited[neighbor] = true
+            push!(queue, neighbor)
+            push!(tree_bonds, bond_index)
+        end
+    end
+    all(visited) || error("the triangular torus bond graph is disconnected")
+    length(tree_bonds) == number_of_sites - 1 || error(
+        "internal error while constructing the triangular spanning tree",
+    )
+    return tree_bonds
+end
+
+"""
+    canonicalize_spanning_tree_phases(hopping, Lx, Ly; kwargs...)
+
+Apply a site-local U(1) transformation that makes every selected spanning-tree
+hopping real and positive. Return (canonical_hopping, site_gauges, tree_bonds).
+The convention is t_ij -> conj(g_i) * t_ij * g_j. A zero tree hopping is a
+boundary of this gauge chart, so a different tree must be chosen in that case.
+"""
+function canonicalize_spanning_tree_phases(
+    hopping::AbstractArray,
+    Lx::Integer,
+    Ly::Integer;
+    shear::Integer=0,
+    tree_bonds::AbstractVector{<:Integer}=triangular_spanning_tree(
+        Lx,
+        Ly;
+        shear,
+    ),
+    tolerance::Real=1e-12,
+)
+    size(hopping) == (Lx, Ly, 3) || throw(DimensionMismatch(
+        "hopping must have size ($Lx, $Ly, 3), got $(size(hopping))",
+    ))
+    tolerance >= 0 || throw(ArgumentError("tolerance must be nonnegative"))
+
+    bonds = triangular_torus_bonds(Lx, Ly; shear)
+    number_of_sites = Lx * Ly
+    length(tree_bonds) == number_of_sites - 1 || throw(ArgumentError(
+        "tree_bonds must contain $(number_of_sites - 1) bonds",
+    ))
+    length(unique(tree_bonds)) == length(tree_bonds) || throw(ArgumentError(
+        "tree_bonds must not contain duplicates",
+    ))
+    all(index -> index in eachindex(bonds), tree_bonds) ||
+        throw(BoundsError(bonds, tree_bonds))
+
+    adjacency = [Tuple{Int,Int,Bool}[] for _ in 1:number_of_sites]
+    for bond_index in tree_bonds
+        bond = bonds[bond_index]
+        source = (bond.source[2] - 1) * Lx + bond.source[1]
+        target = (bond.target[2] - 1) * Lx + bond.target[1]
+        push!(adjacency[source], (target, bond_index, true))
+        push!(adjacency[target], (source, bond_index, false))
+    end
+
+    phases = zeros(Float64, number_of_sites)
+    visited = falses(number_of_sites)
+    visited[1] = true
+    queue = [1]
+    next_site = 1
+    while next_site <= length(queue)
+        parent = queue[next_site]
+        next_site += 1
+        for (child, bond_index, follows_orientation) in adjacency[parent]
+            visited[child] && continue
+            bond = bonds[bond_index]
+            x, y = bond.source
+            value = hopping[x, y, bond.direction]
+            abs(value) > tolerance || throw(ArgumentError(
+                "spanning-tree bond $bond_index has vanishing hopping; " *
+                "choose a tree that avoids zero hoppings",
+            ))
+            phases[child] = phases[parent] +
+                (follows_orientation ? -angle(value) : angle(value))
+            visited[child] = true
+            push!(queue, child)
+        end
+    end
+    all(visited) || throw(ArgumentError("tree_bonds do not span the lattice"))
+
+    gauges = cis.(phases)
+    canonical = ComplexF64.(hopping)
+    tree_set = Set(tree_bonds)
+    for (bond_index, bond) in enumerate(bonds)
+        source = (bond.source[2] - 1) * Lx + bond.source[1]
+        target = (bond.target[2] - 1) * Lx + bond.target[1]
+        x, y = bond.source
+        value = conj(gauges[source]) *
+            canonical[x, y, bond.direction] * gauges[target]
+        canonical[x, y, bond.direction] = bond_index in tree_set ?
+            ComplexF64(abs(value), 0) : value
+    end
+    return canonical, reshape(gauges, Lx, Ly), collect(Int, tree_bonds)
+end
+
+"""
+    free_state(Lx, Ly; hopping_parameterization=:cartesian, kwargs...)
+
+Construct a trainable, unprojected, half-filled triangular-lattice Gaussian
+state. The legacy cartesian parameterization contains real and imaginary parts
+of all hoppings plus three real fields per site (9LxLy parameters) and retains
+local U(1) redundancy.
+
+The tree_loop parameterization first canonicalizes a spanning tree. It retains
+one real component for every bond, an imaginary component only for each
+non-tree chord, and three fields per site (8LxLy+1 parameters). Tree hoppings
+remain real. Chord arguments are the independent fundamental-loop phases, so
+all continuous local U(1) gauge directions are removed while the Hamiltonian
+remains affine in the optimization coordinates.
+"""
+function free_state(
+    Lx::Integer,
+    Ly::Integer;
+    η::Union{Nothing,AbstractVector}=nothing,
+    hopping=1.0,
+    fields=nothing,
+    randomize_hopping_phases::Bool=false,
+    rng::AbstractRNG=Random.default_rng(),
+    shear::Integer=0,
+    particle_number::Integer=Lx * Ly,
+    gap_tolerance::Real=1e-8,
+    cache_gradients::Bool=false,
+    hopping_parameterization::Symbol=:cartesian,
+)
+    number_of_sites = Lx * Ly
+    number_of_hoppings = 3number_of_sites
+    hopping_parameterization in (:cartesian, :tree_loop) || throw(ArgumentError(
+        "hopping_parameterization must be :cartesian or :tree_loop, got " *
+        "$hopping_parameterization",
+    ))
+
+    bonds = triangular_torus_bonds(Lx, Ly; shear)
+    tree_bonds = triangular_spanning_tree(Lx, Ly; shear)
+    tree_set = Set(tree_bonds)
+    chord_bonds = [index for index in eachindex(bonds) if !(index in tree_set)]
+    number_of_parameters = hopping_parameterization === :cartesian ?
+        9number_of_sites : 6number_of_sites + length(chord_bonds)
+
+    initial_hopping = zeros(ComplexF64, Lx, Ly, 3)
+    initial_fields = zeros(Float64, Lx, Ly, 3)
+    parameters = if isnothing(η)
+        hopping_values = zeros(ComplexF64, Lx, Ly, 3)
+        for bond in bonds
+            x, y = bond.source
+            value = ComplexF64(_aux_triangular_hopping(
+                hopping,
+                bond.source,
+                bond.unwrapped_target,
+                bond.direction,
+            ))
+            isfinite(value) || throw(ArgumentError(
+                "the initial hoppings must be finite",
+            ))
+            if randomize_hopping_phases && !iszero(value)
+                value *= cis(2π * rand(rng))
+            end
+            hopping_values[x, y, bond.direction] = value
+        end
+
+        field_values = zeros(Float64, Lx, Ly, 3)
+        for y in 1:Ly, x in 1:Lx
+            field = _aux_triangular_field(fields, (x, y))
+            all(isreal, field) || throw(ArgumentError(
+                "the initial fictitious fields must be real",
+            ))
+            all(isfinite, field) || throw(ArgumentError(
+                "the initial fictitious fields must be finite",
+            ))
+            field_values[x, y, :] .= real.(field)
+        end
+
+        if hopping_parameterization === :tree_loop
+            hopping_values, _, _ = canonicalize_spanning_tree_phases(
+                hopping_values,
+                Lx,
+                Ly;
+                shear,
+                tree_bonds,
+            )
+        end
+        initial_hopping .= hopping_values
+        initial_fields .= field_values
+
+        initial_parameters = Vector{Float64}(undef, number_of_parameters)
+        for (bond_index, bond) in enumerate(bonds)
+            x, y = bond.source
+            value = hopping_values[x, y, bond.direction]
+            initial_parameters[bond_index] = real(value)
+            if hopping_parameterization === :cartesian
+                initial_parameters[number_of_hoppings + bond_index] = imag(value)
+            end
+        end
+        if hopping_parameterization === :tree_loop
+            for (chord_index, bond_index) in enumerate(chord_bonds)
+                bond = bonds[bond_index]
+                x, y = bond.source
+                initial_parameters[number_of_hoppings + chord_index] =
+                    imag(hopping_values[x, y, bond.direction])
+            end
+        end
+        field_parameter_offset = hopping_parameterization === :cartesian ?
+            2number_of_hoppings : number_of_hoppings + length(chord_bonds)
+        for y in 1:Ly, x in 1:Lx
+            site = (y - 1) * Lx + x
+            parameter_index = field_parameter_offset + 3(site - 1)
+            initial_parameters[parameter_index+1:parameter_index+3] .=
+                field_values[x, y, :]
+        end
+        initial_parameters
+    else
+        randomize_hopping_phases && throw(ArgumentError(
+            "randomize_hopping_phases cannot be used when η is supplied",
+        ))
+        _real_ansatz_parameters(η, number_of_parameters, "the free ansatz")
+    end
+
+    if !isnothing(η)
+        chord_positions = Dict(
+            bond => index for (index, bond) in enumerate(chord_bonds)
+        )
+        for (bond_index, bond) in enumerate(bonds)
+            x, y = bond.source
+            imaginary_part = if hopping_parameterization === :cartesian
+                parameters[number_of_hoppings + bond_index]
+            else
+                chord_index = get(chord_positions, bond_index, 0)
+                iszero(chord_index) ? 0.0 :
+                    parameters[number_of_hoppings + chord_index]
+            end
+            initial_hopping[x, y,bond.direction] =
+                parameters[bond_index] + im * imaginary_part
+        end
+        field_parameter_offset = hopping_parameterization === :cartesian ?
+            2number_of_hoppings : number_of_hoppings + length(chord_bonds)
+        for y in 1:Ly, x in 1:Lx
+            site = (y - 1) * Lx + x
+            parameter_index = field_parameter_offset + 3(site - 1)
+            initial_fields[x, y, :] .=
+                parameters[parameter_index+1:parameter_index+3]
+        end
+    end
+
+    expand_parameters = if hopping_parameterization === :cartesian
+        identity
+    else
+        function (reduced_parameters)
+            full_parameters = zeros(
+                eltype(reduced_parameters),
+                9number_of_sites,
+            )
+            full_parameters[1:number_of_hoppings] .=
+                reduced_parameters[1:number_of_hoppings]
+            for (chord_index, bond_index) in enumerate(chord_bonds)
+                full_parameters[number_of_hoppings + bond_index] =
+                    reduced_parameters[number_of_hoppings + chord_index]
+            end
+            reduced_field_offset = number_of_hoppings + length(chord_bonds)
+            full_parameters[2number_of_hoppings+1:end] .=
+                reduced_parameters[reduced_field_offset+1:end]
+            return full_parameters
+        end
+    end
+
+    return _triangular_parton_state(
+        Lx,
+        Ly,
+        parameters,
+        initial_hopping,
+        initial_fields,
+        expand_parameters;
+        shear,
+        particle_number,
+        gap_tolerance,
+        cache_gradients,
+        hopping_parameterization=:cartesian,
     )
 end

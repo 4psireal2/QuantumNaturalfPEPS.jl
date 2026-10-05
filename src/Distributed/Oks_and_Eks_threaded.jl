@@ -93,7 +93,9 @@ function Oks_and_Eks_threaded(peps, ham_op, sample_nr; trial_state =IdentityStat
         weights = ones(length(logpcs))
     end
     
-    data = Dict{Symbol, Any}(:Eks => Eks, :logψs => logψs, :samples => samples, :logpcs => logpcs, :weights => weights, :contract_dims => contract_dims)
+    # data = Dict{Symbol, Any}(:Eks => Eks, :logψs => logψs, :samples => samples, :weights => weights, :contract_dims => contract_dims)
+    data = Dict{Symbol, Any}(:Eks => Eks, :logψs => logψs, :logpcs => logpcs, :samples => samples, :weights => weights, :contract_dims => contract_dims)
+
 
     if return_Oks
         data[:Oks] = transpose(Oks)
@@ -178,7 +180,9 @@ function Oks_and_Eks_threaded(GS::GaussianState, H_BdG_exact::Hermitian, sample_
         weights = ones(length(logpcs))
     end
 
-    data = Dict{Symbol, Any}(:Eks => Eks, :logψs => logψs, :samples => samples, :weights => weights, :contract_dims => contract_dims)
+    # data = Dict{Symbol, Any}(:Eks => Eks, :logψs => logψs, :samples => samples, :weights => weights, :contract_dims => contract_dims)
+    data = Dict{Symbol, Any}(:Eks => Eks, :logψs => logψs, :logpcs => logpcs, :samples => samples, :weights => weights, :contract_dims => contract_dims)
+
 
     if return_Oks
         data[:Oks] = transpose(Oks)

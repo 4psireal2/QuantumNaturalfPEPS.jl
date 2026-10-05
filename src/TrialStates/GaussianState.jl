@@ -183,10 +183,17 @@ function _triangular_aux_bdg_function(
     hopping_phases::AbstractArray,
     chemical_potential::Real,
     number_of_parameters::Integer,
-    expand_parameters::Function=identity,
+    expand_parameters::Function=identity;
+    hopping_parameterization::Symbol=:fixed_phase,
 )
     number_of_sites = Lx * Ly
     number_of_modes = 2number_of_sites
+    hopping_parameterization in (:fixed_phase, :cartesian) || throw(ArgumentError(
+        "hopping_parameterization must be :fixed_phase or :cartesian, " *
+        "got $hopping_parameterization",
+    ))
+    number_of_expanded_parameters =
+        hopping_parameterization === :fixed_phase ? 6number_of_sites : 9number_of_sites
     return function (parameters, requested_number_of_modes)
         requested_number_of_modes == number_of_modes || throw(DimensionMismatch(
             "the triangular auxiliary state contains $number_of_modes modes, " *
@@ -197,9 +204,9 @@ function _triangular_aux_bdg_function(
             "parameters, got $(length(parameters))",
         ))
         full_parameters = expand_parameters(parameters)
-        length(full_parameters) == 6number_of_sites || throw(DimensionMismatch(
+        length(full_parameters) == number_of_expanded_parameters || throw(DimensionMismatch(
             "the expanded triangular auxiliary parameters must have length " *
-            "$(6number_of_sites), got $(length(full_parameters))",
+            "$number_of_expanded_parameters, got $(length(full_parameters))",
         ))
 
         H_buffer = zeros(ComplexF64, number_of_modes, number_of_modes)
@@ -207,8 +214,14 @@ function _triangular_aux_bdg_function(
             x, y = bond.source
             x2, y2 = bond.target
             site = (y - 1) * Lx + x
-            amplitude = full_parameters[3(site - 1) + bond.direction]
-            t = amplitude * hopping_phases[x, y, bond.direction]
+            hopping_index = 3(site - 1) + bond.direction
+            t = if hopping_parameterization === :fixed_phase
+                full_parameters[hopping_index] *
+                    hopping_phases[x, y, bond.direction]
+            else
+                full_parameters[hopping_index] +
+                    im * full_parameters[3number_of_sites + hopping_index]
+            end
             for spin in 1:2
                 i = _spinful_aux_index(x, y, spin, Lx)
                 j = _spinful_aux_index(x2, y2, spin, Lx)
@@ -217,7 +230,8 @@ function _triangular_aux_bdg_function(
             end
         end
 
-        field_offset = 3number_of_sites
+        field_offset = hopping_parameterization === :fixed_phase ?
+            3number_of_sites : 6number_of_sites
         for y in 1:Ly, x in 1:Lx
             site = (y - 1) * Lx + x
             Mx = full_parameters[field_offset + 3(site - 1) + 1]

@@ -1,5 +1,6 @@
 using Test
 using LinearAlgebra
+using Random
 using ITensors
 using QuantumNaturalfPEPS
 
@@ -51,6 +52,144 @@ using QuantumNaturalfPEPS
             particle_number=N,
         )
     end
+end
+
+@testset "Free triangular Gaussian state" begin
+    Lx, Ly = 3, 4
+    N = Lx * Ly
+    number_of_hoppings = 3N
+    state = free_state(
+        Lx,
+        Ly;
+        randomize_hopping_phases=true,
+        rng=MersenneTwister(1234),
+        gap_tolerance=0.0,
+    )
+    parameters = QuantumNaturalfPEPS.Parameters(state)
+
+    @test length(parameters) == 9N
+    @test all(isfinite, parameters)
+    @test any(!iszero, view(parameters, number_of_hoppings+1:2number_of_hoppings))
+
+    hopping = zeros(ComplexF64, Lx, Ly, 3)
+    fields = zeros(Float64, Lx, Ly, 3)
+    for y in 1:Ly, x in 1:Lx
+        site = (y - 1) * Lx + x
+        for direction in 1:3
+            hopping_index = 3(site - 1) + direction
+            hopping[x, y, direction] = parameters[hopping_index] +
+                im * parameters[number_of_hoppings + hopping_index]
+        end
+        field_index = 6N + 3(site - 1)
+        fields[x, y, :] .= parameters[field_index+1:field_index+3]
+    end
+
+    Haux = Matrix(hamiltonian_aux_triangular_torus(Lx, Ly; hopping, fields))
+    H_BdG = Matrix(state.H_BdG_func(parameters, state.N))
+    particle_block = H_BdG[1:state.N, 1:state.N]
+    shift = particle_block[1, 1] - Haux[1, 1]
+    @test particle_block ≈ Haux + shift * I atol=1e-12
+
+    # The imaginary hopping component is a genuine variational direction.
+    imaginary_parameter = number_of_hoppings + 1
+    step = 1e-6
+    parameters_plus = copy(parameters)
+    parameters_minus = copy(parameters)
+    parameters_plus[imaginary_parameter] += step
+    parameters_minus[imaginary_parameter] -= step
+    phase_derivative = (
+        Matrix(state.H_BdG_func(parameters_plus, state.N)) -
+        Matrix(state.H_BdG_func(parameters_minus, state.N))
+    ) / (2step)
+    @test norm(phase_derivative) > 0
+
+    repeated = free_state(
+        Lx,
+        Ly;
+        randomize_hopping_phases=true,
+        rng=MersenneTwister(1234),
+        gap_tolerance=0.0,
+    )
+    @test QuantumNaturalfPEPS.Parameters(repeated) == parameters
+
+    explicit = free_state(Lx, Ly; η=parameters, gap_tolerance=0.0)
+    @test QuantumNaturalfPEPS.Parameters(explicit) == parameters
+    @test_throws DimensionMismatch free_state(Lx, Ly; η=zeros(9N - 1))
+    @test_throws ArgumentError free_state(
+        Lx,
+        Ly;
+        η=parameters,
+        randomize_hopping_phases=true,
+    )
+end
+
+
+@testset "Spanning-tree gauge and loop coordinates" begin
+    Lx, Ly = 3, 4
+    N = Lx * Ly
+    rng = MersenneTwister(4321)
+    hopping = cis.(2π .* rand(rng, Lx, Ly, 3))
+    canonical, gauges, tree_bonds =
+        canonicalize_spanning_tree_phases(hopping, Lx, Ly)
+    bonds = triangular_torus_bonds(Lx, Ly)
+
+    @test length(tree_bonds) == N - 1
+    @test size(gauges) == (Lx, Ly)
+    for bond_index in tree_bonds
+        bond = bonds[bond_index]
+        value = canonical[bond.source..., bond.direction]
+        @test imag(value) == 0
+        @test real(value) > 0
+    end
+
+    original_H = Matrix(hamiltonian_aux_triangular_torus(Lx, Ly; hopping))
+    canonical_H = Matrix(hamiltonian_aux_triangular_torus(
+        Lx,
+        Ly;
+        hopping=canonical,
+    ))
+    @test eigvals(Hermitian(original_H)) ≈ eigvals(Hermitian(canonical_H))
+
+    state = free_state(
+        Lx,
+        Ly;
+        hopping,
+        hopping_parameterization=:tree_loop,
+        gap_tolerance=0.0,
+    )
+    parameters = QuantumNaturalfPEPS.Parameters(state)
+    @test length(parameters) == 8N + 1
+
+    H_BdG = Matrix(state.H_BdG_func(parameters, state.N))
+    particle_block = H_BdG[1:state.N, 1:state.N]
+    shift = particle_block[1, 1] - canonical_H[1, 1]
+    @test particle_block ≈ canonical_H + shift * I atol=1e-12
+
+    explicit = free_state(
+        Lx,
+        Ly;
+        η=parameters,
+        hopping_parameterization=:tree_loop,
+        gap_tolerance=0.0,
+    )
+    @test QuantumNaturalfPEPS.Parameters(explicit) == parameters
+
+    parameter_index = 3N + 1
+    step = 1e-6
+    plus = copy(parameters)
+    minus = copy(parameters)
+    plus[parameter_index] += step
+    minus[parameter_index] -= step
+    H0 = Matrix(state.H_BdG_func(parameters, state.N))
+    @test Matrix(state.H_BdG_func(plus, state.N)) - H0 ≈
+        H0 - Matrix(state.H_BdG_func(minus, state.N))
+
+    @test_throws DimensionMismatch free_state(
+        Lx,
+        Ly;
+        η=zeros(8N),
+        hopping_parameterization=:tree_loop,
+    )
 end
 
 @testset "Triangular ordered-state Gaussian ansatze" begin
@@ -135,6 +274,20 @@ end
         projected = gutzwiller_project(state; Nup=N ÷ 2)
         @test projected isa ParameterizedGutzwillerProjectedState
         @test length(QuantumNaturalfPEPS.Parameters(projected)) == length(parameters)
+
+        if name == :stripe
+            cache = QuantumNaturalfPEPS.ProjectedGaussianSchurCache(projected)
+            spin_configuration = Int[]
+            while !isempty(cache.remaining_sites)
+                probabilities = projected_conditional_probabilities(cache)
+                spin = argmax(probabilities) - 1
+                push!(spin_configuration, spin)
+                QuantumNaturalfPEPS.condition_projected_gaussian!(cache, spin)
+            end
+            gradient = gutzwiller_log_gradient(projected, spin_configuration)
+            @test length(gradient) == length(parameters)
+            @test all(isfinite, gradient)
+        end
     end
 
     @test_throws ArgumentError y_hopping_fields(4, 6, eta_Y)
