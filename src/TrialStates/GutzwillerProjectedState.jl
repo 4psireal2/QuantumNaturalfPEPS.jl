@@ -601,7 +601,14 @@ function write!(
         "the projected Gaussian state requires $(length(state.η)) parameters, " *
         "got $(length(η))",
     ))
-    state.η = η
+    if eltype(state.η) <: Real
+        tolerance = 1e-12 * max(1.0, norm(η))
+        maximum(abs, imag.(η); init=0.0) <= tolerance ||
+            throw(ArgumentError("real MF coordinates received an imaginary component"))
+        state.η = Float64.(real.(η))
+    else
+        state.η = copy(η)  # preserve support for genuinely complex parameterizations
+    end
     occupied, correlation_matrix, unoccupied, occupied_energies, unoccupied_energies =
         _projected_gaussian_orbital_data(
             state.H_BdG_func,
