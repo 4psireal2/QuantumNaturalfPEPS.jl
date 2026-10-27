@@ -45,7 +45,7 @@ export generate_Oks_and_Eks
 export triangular_torus_bonds, triangular_lattice_bonds, snake_site_index
 export staggered_pi_flux_hoppings
 export uniform_flux_staggered_pi_hoppings
-export hamiltonian_aux_triangular_torus
+export hamiltonian_aux_triangular_torus, hamiltonian_aux_triangular_lattice
 export hamiltonian_J1J2_H
 export hamiltonian_J1J2_H_snake_mpo
 export monopole_state

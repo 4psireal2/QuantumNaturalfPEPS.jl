@@ -246,6 +246,60 @@ function hamiltonian_aux_triangular_torus(
     return Hermitian(H)
 end
 
+
+"""
+Construct the spinful one-particle matrix for the nearest-neighbor auxiliary
+parton Hamiltonian on a triangular lattice with OBC. The construction is
+similar to `hamiltonian_aux_triangular_torus` but uses
+`triangular_lattice_bonds(Lx, Ly; boundary=:open)`
+"""
+function hamiltonian_aux_triangular_lattice(
+    Lx::Integer,
+    Ly::Integer;
+    hopping=1.0,
+    fields=nothing,
+)
+    if hopping isa AbstractArray
+        size(hopping) == (Lx, Ly, 3) ||
+            throw(DimensionMismatch("hopping must have size ($Lx, $Ly, 3)"))
+    end
+    if fields isa AbstractArray
+        size(fields) == (Lx, Ly, 3) ||
+            throw(DimensionMismatch("fields must have size ($Lx, $Ly, 3)"))
+    end
+
+    H = zeros(ComplexF64, 2Lx * Ly, 2Lx * Ly)
+
+    for bond in triangular_lattice_bonds(Lx, Ly; boundary=:open)
+        t = ComplexF64(_aux_triangular_hopping(
+            hopping, bond.source, bond.unwrapped_target, bond.direction
+        ))
+        x, y = bond.source
+        x2, y2 = bond.target
+
+        for spin in 1:2
+            i = _spinful_aux_index(x, y, spin, Lx)
+            j = _spinful_aux_index(x2, y2, spin, Lx)
+            H[i, j] += t
+            H[j, i] += conj(t)
+        end
+    end
+
+    for y in 1:Ly, x in 1:Lx
+        Mx, My, Mz = _aux_triangular_field(fields, (x, y))
+        up = _spinful_aux_index(x, y, 1, Lx)
+        down = _spinful_aux_index(x, y, 2, Lx)
+
+        H[up, up] += Mz / 2
+        H[down, down] -= Mz / 2
+        H[up, down] += (Mx - im * My) / 2
+        H[down, up] += (Mx + im * My) / 2
+    end
+
+    return Hermitian(H)
+end
+
+
 """
     hamiltonian_J1J2_H(
         Lx, Ly; J1, J2, H, boundary=:open, shear=0

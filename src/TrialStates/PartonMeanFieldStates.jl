@@ -22,6 +22,28 @@ function _check_stripe_torus(Lx::Integer, Ly::Integer, shear::Integer)
     return nothing
 end
 
+function _check_triangular_ansatz_geometry(
+    Lx::Integer,
+    Ly::Integer,
+    boundary::Symbol,
+    shear::Integer=0,
+)
+    boundary in (:open, :periodic) || throw(ArgumentError(
+        "boundary must be :open or :periodic, got $boundary",
+    ))
+    if boundary === :open
+        iszero(shear) || throw(ArgumentError(
+            "shear is only supported with periodic boundaries",
+        ))
+        Lx >= 1 || throw(ArgumentError("Lx must be positive"))
+        Ly >= 1 || throw(ArgumentError("Ly must be positive"))
+    else
+        Lx >= 3 || throw(ArgumentError("Lx must be at least 3"))
+        Ly >= 3 || throw(ArgumentError("Ly must be at least 3"))
+    end
+    return nothing
+end
+
 _triangular_k_index(x::Integer, y::Integer) = mod(2(x - 1) - (y - 1), 3)
 _triangular_k_angle(x::Integer, y::Integer) = 2pi * _triangular_k_index(x, y) / 3
 _triangular_sublattice(x::Integer, y::Integer) = _triangular_k_index(x, y) + 1
@@ -47,7 +69,7 @@ function _real_ansatz_parameters(
 end
 
 """
-    staggered_pi_flux_hoppings(Lx, Ly; amplitude=1.0)
+    staggered_pi_flux_hoppings(Lx, Ly; amplitude=1.0, boundary=:periodic)
 
 Construct an `Lx × Ly × 3` hopping array for the triangular-lattice Dirac
 spin-liquid ansatz with staggered `[0, π]` flux through the two triangles of
@@ -66,18 +88,21 @@ It gives zero flux around the oriented triangle
 `(x,y) → (x+1,y) → (x+1,y+1) → (x,y)` and `π` flux around
 `(x,y) → (x+1,y+1) → (x,y+1) → (x,y)`. Consequently, every
 primitive rhombus has `π` flux. This gauge doubles the unit cell along `y`,
-so `Ly` must be even on a torus.
+so `Ly` must be even on a torus. With `boundary=:open`, only positive
+lattice dimensions are required.
 """
 function staggered_pi_flux_hoppings(
     Lx::Integer,
     Ly::Integer;
     amplitude::Real=1.0,
+    boundary::Symbol=:periodic,
 )
-    Lx >= 3 || throw(ArgumentError("Lx must be at least 3 to avoid duplicate torus bonds"))
-    Ly >= 3 || throw(ArgumentError("Ly must be at least 3 to avoid duplicate torus bonds"))
-    iseven(Ly) || throw(ArgumentError(
-        "Ly must be even for the chosen staggered-[0, π] torus gauge",
-    ))
+    _check_triangular_ansatz_geometry(Lx, Ly, boundary)
+    if boundary === :periodic
+        iseven(Ly) || throw(ArgumentError(
+            "Ly must be even for the chosen staggered-[0, π] torus gauge",
+        ))
+    end
     amplitude > 0 || throw(ArgumentError("amplitude must be positive"))
 
     hopping = fill(ComplexF64(amplitude), Lx, Ly, 3)
@@ -91,10 +116,12 @@ function staggered_pi_flux_hoppings(
 end
 
 """
-    uniform_flux_staggered_pi_hoppings(Lx, Ly, Q; amplitude=1.0)
+    uniform_flux_staggered_pi_hoppings(
+        Lx, Ly, Q; amplitude=1.0, boundary=:periodic
+    )
 
 Add `Q` quantized units of uniform U(1) flux to the staggered-`[0, pi]`
-nearest-neighbor hopping ansatz on an `Lx x Ly` torus. The extra flux through
+nearest-neighbor hopping ansatz on an `Lx x Ly` lattice. The extra flux through
 each primitive rhombus is
 
 ```math
@@ -102,8 +129,9 @@ phi = 2 pi Q/(L_x L_y),
 ```
 
 and each elementary triangle carries `phi/2` in addition to its staggered
-zero- or `pi`-flux background. Magnetic boundary phases are included in the
-returned `Lx x Ly x 3` hopping array. `Q` is understood modulo `Lx*Ly`.
+zero- or `pi`-flux background. With `boundary=:periodic`, magnetic boundary
+phases are included. With `boundary=:open`, those phases are omitted. `Q` is
+understood modulo `Lx*Ly`.
 
 The direction index is the same as for [`staggered_pi_flux_hoppings`](@ref):
 `1 => (1,0)`, `2 => (0,1)`, and `3 => (1,1)`.
@@ -117,15 +145,16 @@ function uniform_flux_staggered_pi_hoppings(
     Ly::Integer,
     Q::Integer;
     amplitude::Real=1.0,
+    boundary::Symbol=:periodic,
 )
+    hopping = staggered_pi_flux_hoppings(Lx, Ly; amplitude, boundary)
     N = Lx * Ly
     additional_flux_per_rhombus = 2pi * mod(Q, N) / N
-    hopping = staggered_pi_flux_hoppings(Lx, Ly; amplitude)
 
     # Landau gauge with the compensating y-boundary phase required on a torus.
     for y in 1:Ly, x in 1:Lx
         x0, y0 = x - 1, y - 1
-        phases = if y < Ly
+        phases = if y < Ly || boundary === :open
             (
                 -additional_flux_per_rhombus * y0,
                 0.0,
@@ -169,13 +198,15 @@ function y_hopping_fields(
     η::AbstractVector;
     hopping_amplitude::Real=1.0,
     shear::Integer=0,
+    boundary::Symbol=:periodic,
 )
-    _check_three_sublattice_torus(Lx, Ly, shear)
+    bonds = triangular_lattice_bonds(Lx, Ly; boundary, shear)
+    boundary === :periodic && _check_three_sublattice_torus(Lx, Ly, shear)
     h1, h2, h3, delta = _real_ansatz_parameters(η, 4, "the Y ansatz")
     delta > 0 || throw(ArgumentError("the Y hopping magnitude Delta must be positive"))
 
-    hopping = staggered_pi_flux_hoppings(Lx, Ly; amplitude=hopping_amplitude)
-    for bond in triangular_torus_bonds(Lx, Ly; shear)
+    hopping = staggered_pi_flux_hoppings(Lx, Ly; amplitude=hopping_amplitude, boundary)
+    for bond in bonds
         source_sublattice = _triangular_sublattice(bond.source...)
         target_sublattice = _triangular_sublattice(bond.target...)
         if (source_sublattice == 2 && target_sublattice == 3) ||
@@ -214,10 +245,12 @@ function umbrella_hopping_fields(
     η::AbstractVector;
     hopping_amplitude::Real=1.0,
     shear::Integer=0,
+    boundary::Symbol=:periodic,
 )
-    _check_three_sublattice_torus(Lx, Ly, shear)
+    _check_triangular_ansatz_geometry(Lx, Ly, boundary, shear)
+    boundary === :periodic && _check_three_sublattice_torus(Lx, Ly, shear)
     h = only(_real_ansatz_parameters(η, 1, "the umbrella ansatz"))
-    hopping = staggered_pi_flux_hoppings(Lx, Ly; amplitude=hopping_amplitude)
+    hopping = staggered_pi_flux_hoppings(Lx, Ly; amplitude=hopping_amplitude, boundary)
     fields = zeros(Float64, Lx, Ly, 3)
     for y in 1:Ly, x in 1:Lx
         angle = _triangular_k_angle(x, y)
@@ -245,13 +278,15 @@ function cs_hopping_fields(
     hopping_amplitude::Real=1.0,
     stripe_delta::Real=0.8,
     shear::Integer=0,
+    boundary::Symbol=:periodic,
 )
-    _check_stripe_torus(Lx, Ly, shear)
+    _check_triangular_ansatz_geometry(Lx, Ly, boundary, shear)
+    boundary === :periodic && _check_stripe_torus(Lx, Ly, shear)
     h = only(_real_ansatz_parameters(η, 1, "the canted-stripe ansatz"))
     stripe_delta > 0 || throw(ArgumentError(
         "the fixed canted-stripe hopping magnitude must be positive",
     ))
-    hopping = staggered_pi_flux_hoppings(Lx, Ly; amplitude=hopping_amplitude)
+    hopping = staggered_pi_flux_hoppings(Lx, Ly; amplitude=hopping_amplitude, boundary)
     hopping[:, :, 3] .*= stripe_delta / hopping_amplitude
     fields = zeros(Float64, Lx, Ly, 3)
     for y in 1:Ly, x in 1:Lx
@@ -270,6 +305,7 @@ function _triangular_parton_state(
     fields::AbstractArray,
     expand_parameters::Function;
     shear::Integer=0,
+    boundary::Symbol=:periodic,
     particle_number::Integer=Lx * Ly,
     gap_tolerance::Real=1e-8,
     cache_gradients::Bool=false,
@@ -286,13 +322,12 @@ function _triangular_parton_state(
         "gap_tolerance must be nonnegative, got $gap_tolerance",
     ))
 
-    initial_Haux = hamiltonian_aux_triangular_torus(
-        Lx,
-        Ly;
-        hopping,
-        fields,
-        shear,
-    )
+    bonds = triangular_lattice_bonds(Lx, Ly; boundary, shear)
+    initial_Haux = if boundary === :open
+        hamiltonian_aux_triangular_lattice(Lx, Ly; hopping, fields)
+    else
+        hamiltonian_aux_triangular_torus(Lx, Ly; hopping, fields, shear)
+    end
     chemical_potential = _auxiliary_chemical_potential(
         initial_Haux,
         particle_number,
@@ -306,7 +341,7 @@ function _triangular_parton_state(
     H_BdG_func = _triangular_aux_bdg_function(
         Lx,
         Ly,
-        triangular_torus_bonds(Lx, Ly; shear),
+        bonds,
         hopping_phases,
         chemical_potential,
         length(η),
@@ -330,6 +365,7 @@ function monopole_state(
     Q::Integer;
     hopping_amplitude::Real=1.0,
     shear::Integer=0,
+    boundary::Symbol=:periodic,
     particle_number::Integer=Lx * Ly,
     gap_tolerance::Real=1e-8,
     cache_gradients::Bool=false,
@@ -339,6 +375,7 @@ function monopole_state(
         Ly,
         Q;
         amplitude=hopping_amplitude,
+        boundary,
     )
     fields = zeros(Float64, Lx, Ly, 3)
 
@@ -368,6 +405,7 @@ function monopole_state(
         fields,
         expand_parameters;
         shear,
+        boundary,
         particle_number,
         gap_tolerance,
         cache_gradients,
@@ -386,6 +424,7 @@ function y_state(
     η::AbstractVector=[0.35, 0.25, 0.15, 0.8],
     hopping_amplitude::Real=1.0,
     shear::Integer=0,
+    boundary::Symbol=:periodic,
     particle_number::Integer=Lx * Ly,
     gap_tolerance::Real=1e-8,
     cache_gradients::Bool=false,
@@ -396,8 +435,9 @@ function y_state(
         η;
         hopping_amplitude,
         shear,
+        boundary,
     )
-    bonds = triangular_torus_bonds(Lx, Ly; shear)
+    bonds = triangular_lattice_bonds(Lx, Ly; boundary, shear)
     delta_bond = falses(Lx, Ly, 3)
     for bond in bonds
         source_sublattice = _triangular_sublattice(bond.source...)
@@ -441,6 +481,7 @@ function y_state(
         fields,
         expand_parameters;
         shear,
+        boundary,
         particle_number,
         gap_tolerance,
         cache_gradients,
@@ -460,6 +501,7 @@ function umbrella_state(
     η::AbstractVector=[0.3],
     hopping_amplitude::Real=1.0,
     shear::Integer=0,
+    boundary::Symbol=:periodic,
     particle_number::Integer=Lx * Ly,
     gap_tolerance::Real=1e-8,
     cache_gradients::Bool=false,
@@ -471,6 +513,7 @@ function umbrella_state(
         η;
         hopping_amplitude,
         shear,
+        boundary,
     )
     parameter_offset = zeros(Float64, 6Lx * Ly)
     parameter_offset[1:(3Lx * Ly)] .= hopping_amplitude
@@ -491,6 +534,7 @@ function umbrella_state(
         fields,
         expand_parameters;
         shear,
+        boundary,
         particle_number,
         gap_tolerance,
         cache_gradients,
@@ -511,6 +555,7 @@ function cs_state(
     hopping_amplitude::Real=1.0,
     stripe_delta::Real=0.8,
     shear::Integer=0,
+    boundary::Symbol=:periodic,
     particle_number::Integer=Lx * Ly,
     gap_tolerance::Real=1e-8,
     cache_gradients::Bool=false,
@@ -522,6 +567,7 @@ function cs_state(
         hopping_amplitude,
         stripe_delta,
         shear,
+        boundary,
     )
     parameter_offset = zeros(Float64, 6Lx * Ly)
     parameter_map = zeros(Float64, 6Lx * Ly, 1)
@@ -544,6 +590,7 @@ function cs_state(
         fields,
         expand_parameters;
         shear,
+        boundary,
         particle_number,
         gap_tolerance,
         cache_gradients,
@@ -552,13 +599,19 @@ end
 
 
 """
-    triangular_spanning_tree(Lx, Ly; shear=0)
+    triangular_spanning_tree(Lx, Ly; boundary=:periodic, shear=0)
 
 Return deterministic nearest-neighbor bond indices for a breadth-first
-spanning tree rooted at site (1, 1). Indices refer to triangular_torus_bonds.
+spanning tree rooted at site (1, 1). Indices refer to
+`triangular_lattice_bonds(Lx, Ly; boundary, shear)`.
 """
-function triangular_spanning_tree(Lx::Integer, Ly::Integer; shear::Integer=0)
-    bonds = triangular_torus_bonds(Lx, Ly; shear)
+function triangular_spanning_tree(
+    Lx::Integer,
+    Ly::Integer;
+    boundary::Symbol=:periodic,
+    shear::Integer=0,
+)
+    bonds = triangular_lattice_bonds(Lx, Ly; boundary, shear)
     number_of_sites = Lx * Ly
     adjacency = [Tuple{Int,Int}[] for _ in 1:number_of_sites]
     for (bond_index, bond) in enumerate(bonds)
@@ -583,7 +636,7 @@ function triangular_spanning_tree(Lx::Integer, Ly::Integer; shear::Integer=0)
             push!(tree_bonds, bond_index)
         end
     end
-    all(visited) || error("the triangular torus bond graph is disconnected")
+    all(visited) || error("the triangular lattice bond graph is disconnected")
     length(tree_bonds) == number_of_sites - 1 || error(
         "internal error while constructing the triangular spanning tree",
     )
@@ -603,9 +656,11 @@ function canonicalize_spanning_tree_phases(
     Lx::Integer,
     Ly::Integer;
     shear::Integer=0,
+    boundary::Symbol=:periodic,
     tree_bonds::AbstractVector{<:Integer}=triangular_spanning_tree(
         Lx,
         Ly;
+        boundary,
         shear,
     ),
     tolerance::Real=1e-12,
@@ -615,7 +670,7 @@ function canonicalize_spanning_tree_phases(
     ))
     tolerance >= 0 || throw(ArgumentError("tolerance must be nonnegative"))
 
-    bonds = triangular_torus_bonds(Lx, Ly; shear)
+    bonds = triangular_lattice_bonds(Lx, Ly; boundary, shear)
     number_of_sites = Lx * Ly
     length(tree_bonds) == number_of_sites - 1 || throw(ArgumentError(
         "tree_bonds must contain $(number_of_sites - 1) bonds",
@@ -679,16 +734,20 @@ end
     free_state(Lx, Ly; hopping_parameterization=:cartesian, kwargs...)
 
 Construct a trainable, unprojected, half-filled triangular-lattice Gaussian
-state. The legacy cartesian parameterization contains real and imaginary parts
-of all hoppings plus three real fields per site (9LxLy parameters) and retains
-local U(1) redundancy.
+state. The cartesian parameterization contains real and imaginary parts of
+each existing bond hopping plus three real fields per site. On a torus it has
+`9LxLy` parameters and retains local U(1) redundancy.
 
 The tree_loop parameterization first canonicalizes a spanning tree. It retains
 one real component for every bond, an imaginary component only for each
-non-tree chord, and three fields per site (8LxLy+1 parameters). Tree hoppings
+non-tree chord, and three fields per site (`8LxLy+1` parameters on a torus). Tree hoppings
 remain real. Chord arguments are the independent fundamental-loop phases, so
 all continuous local U(1) gauge directions are removed while the Hamiltonian
 remains affine in the optimization coordinates.
+
+Set `boundary=:open` to retain only bonds inside the rectangular lattice.
+The default `boundary=:periodic` preserves the torus construction. `shear`
+must be zero for open boundaries.
 """
 function free_state(
     Lx::Integer,
@@ -699,24 +758,26 @@ function free_state(
     randomize_hopping_phases::Bool=false,
     rng::AbstractRNG=Random.default_rng(),
     shear::Integer=0,
+    boundary::Symbol=:periodic,
     particle_number::Integer=Lx * Ly,
     gap_tolerance::Real=1e-8,
     cache_gradients::Bool=false,
     hopping_parameterization::Symbol=:cartesian,
 )
     number_of_sites = Lx * Ly
-    number_of_hoppings = 3number_of_sites
     hopping_parameterization in (:cartesian, :tree_loop) || throw(ArgumentError(
         "hopping_parameterization must be :cartesian or :tree_loop, got " *
         "$hopping_parameterization",
     ))
 
-    bonds = triangular_torus_bonds(Lx, Ly; shear)
-    tree_bonds = triangular_spanning_tree(Lx, Ly; shear)
+    bonds = triangular_lattice_bonds(Lx, Ly; boundary, shear)
+    number_of_hoppings = length(bonds)
+    tree_bonds = triangular_spanning_tree(Lx, Ly; boundary, shear)
     tree_set = Set(tree_bonds)
     chord_bonds = [index for index in eachindex(bonds) if !(index in tree_set)]
     number_of_parameters = hopping_parameterization === :cartesian ?
-        9number_of_sites : 6number_of_sites + length(chord_bonds)
+        2number_of_hoppings + 3number_of_sites :
+        number_of_hoppings + length(chord_bonds) + 3number_of_sites
 
     initial_hopping = zeros(ComplexF64, Lx, Ly, 3)
     initial_fields = zeros(Float64, Lx, Ly, 3)
@@ -757,6 +818,7 @@ function free_state(
                 Lx,
                 Ly;
                 shear,
+                boundary,
                 tree_bonds,
             )
         end
@@ -822,25 +884,33 @@ function free_state(
         end
     end
 
-    expand_parameters = if hopping_parameterization === :cartesian
-        identity
-    else
-        function (reduced_parameters)
-            full_parameters = zeros(
-                eltype(reduced_parameters),
-                9number_of_sites,
-            )
-            full_parameters[1:number_of_hoppings] .=
-                reduced_parameters[1:number_of_hoppings]
+    expand_parameters = function (reduced_parameters)
+        full_parameters = zeros(eltype(reduced_parameters), 9number_of_sites)
+        for (bond_index, bond) in enumerate(bonds)
+            x, y = bond.source
+            site = (y - 1) * Lx + x
+            full_index = 3(site - 1) + bond.direction
+            full_parameters[full_index] = reduced_parameters[bond_index]
+            if hopping_parameterization === :cartesian
+                full_parameters[3number_of_sites + full_index] =
+                    reduced_parameters[number_of_hoppings + bond_index]
+            end
+        end
+        if hopping_parameterization === :tree_loop
             for (chord_index, bond_index) in enumerate(chord_bonds)
-                full_parameters[number_of_hoppings + bond_index] =
+                bond = bonds[bond_index]
+                x, y = bond.source
+                site = (y - 1) * Lx + x
+                full_index = 3(site - 1) + bond.direction
+                full_parameters[3number_of_sites + full_index] =
                     reduced_parameters[number_of_hoppings + chord_index]
             end
-            reduced_field_offset = number_of_hoppings + length(chord_bonds)
-            full_parameters[2number_of_hoppings+1:end] .=
-                reduced_parameters[reduced_field_offset+1:end]
-            return full_parameters
         end
+        reduced_field_offset = hopping_parameterization === :cartesian ?
+            2number_of_hoppings : number_of_hoppings + length(chord_bonds)
+        full_parameters[6number_of_sites+1:end] .=
+            reduced_parameters[reduced_field_offset+1:end]
+        return full_parameters
     end
 
     return _triangular_parton_state(
@@ -851,6 +921,7 @@ function free_state(
         initial_fields,
         expand_parameters;
         shear,
+        boundary,
         particle_number,
         gap_tolerance,
         cache_gradients,
