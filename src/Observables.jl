@@ -33,7 +33,7 @@ end
 
 function get_ExpectationValues_multithread(peps, O_op; 
     trial_state::AbstractTrialState=IdentityState(dim(siteinds(peps)[1])),
-        it=100)
+        it=100, seed=nothing)
     nr_threads = Threads.nthreads()
     k = ceil(Int, it / nr_threads)
     
@@ -42,6 +42,7 @@ function get_ExpectationValues_multithread(peps, O_op;
     logpcs = Array{Complex}(undef, k*nr_threads)
     
     Threads.@threads for i in 1:nr_threads
+            isnothing(seed) || Random.seed!(seed + i) # each worker thread needs its own seed
             slice = (1+(i-1)*k):(i*k)
             Obser = @view Obs[slice, :]
             logψ_thread = @view logψs[slice]
@@ -91,6 +92,7 @@ function get_ExpectationValues_multiproc(peps, O_op;
     trial_state::AbstractTrialState=IdentityState(dim(siteinds(peps)[1])),
     it=100, 
     n_threads=Distributed.remotecall_fetch(()->Threads.nthreads(), workers()[1]),
+    seed=nothing,
     kwargs...)
 
     nr_procs = length(workers())
@@ -99,7 +101,12 @@ function get_ExpectationValues_multiproc(peps, O_op;
     k_eff = k_thread * n_threads
     sample_nr_eff = k_eff * nr_procs
 
-    out = [Distributed.remotecall(() -> get_ExpectationValues_multithread(peps, O_op; trial_state=trial_state, it=k), w) for w in workers()]
+    out = [Distributed.remotecall(
+        () -> get_ExpectationValues_multithread(peps, O_op;
+            trial_state=trial_state, it=k,
+            seed=isnothing(seed) ? nothing : seed + (i - 1) * n_threads),
+        w,
+    ) for (i, w) in enumerate(workers())]
 
     Obs = Matrix{ComplexF64}(undef, sample_nr_eff, length(O_op))
     logψs = Vector{ComplexF64}(undef, sample_nr_eff)
