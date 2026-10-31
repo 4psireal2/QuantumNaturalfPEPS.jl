@@ -69,6 +69,7 @@ function Eks_singlethread(peps::AbstractPEPS, ham_op::TensorOperatorSum, sample_
         :logψs => logψs,
         :samples => samples,
         :weights => compute_importance_weights(logψs, logpc),
+        :logpcs => logpc,
         :max_bond => max_bond
     )
 end

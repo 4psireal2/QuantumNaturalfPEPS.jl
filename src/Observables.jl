@@ -93,6 +93,7 @@ function get_ExpectationValues_multiproc(peps, O_op;
     it=100, 
     n_threads=Distributed.remotecall_fetch(()->Threads.nthreads(), workers()[1]),
     seed=nothing,
+    return_log_ratios=false,
     kwargs...)
 
     nr_procs = length(workers())
@@ -121,6 +122,9 @@ function get_ExpectationValues_multiproc(peps, O_op;
         Obs[i1:i2, :], logψs[i1:i2], logpcs[i1:i2] = out_dict[:Obs], out_dict[:logψs], out_dict[:logpcs]
     end
 
+    if return_log_ratios # option to return raw log amplitudes for each batch
+        return Obs, 2 .* real.(logψs) .- logpcs
+    end
     return Obs, compute_importance_weights(logψs, logpcs)
 end
 
