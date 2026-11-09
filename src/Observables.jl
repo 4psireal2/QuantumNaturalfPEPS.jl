@@ -17,7 +17,7 @@ function get_ExpectationValue(peps::AbstractPEPS, O;
 
     # force the existence of double layer envs BEFORE multithreading to avoid race condition.
     if getfield(peps, :double_layer_envs) === nothing
-        update_double_layer_envs!(peps_)
+        update_double_layer_envs!(peps)
     end
 
     if multiproc
