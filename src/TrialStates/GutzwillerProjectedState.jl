@@ -222,6 +222,59 @@ function gutzwiller_project(
 end
 
 """
+    ProjectedDerivativeEntries
+
+The nonzero entries of the particle block `∂H/∂ηᵢ[1:number_of_modes, 1:number_of_modes]`
+for all parameters `ηᵢ`, with the entries of parameter `i` at `ptr[i]:ptr[i+1]-1`.
+
+`H_BdG_func` is affine in `η` (see [`build_H_BdG_derivatives`](@ref)), so these entries do not
+depend on the values of `η` and are built once per state instead of once per sample.
+"""
+struct ProjectedDerivativeEntries
+    ptr::Vector{Int}
+    rows::Vector{Int}
+    cols::Vector{Int}
+    vals::Vector{ComplexF64}
+end
+
+"""
+    projected_derivative_entries(H_BdG_func, η, number_of_modes)
+
+Build the [`ProjectedDerivativeEntries`](@ref) with the same finite differences as
+[`build_H_BdG_derivatives`](@ref), one parameter at a time, so only one dense derivative
+is held in memory at once.
+"""
+function projected_derivative_entries(
+    H_BdG_func::Function,
+    η::AbstractVector{<:Number},
+    number_of_modes::Integer,
+)
+    S = eltype(η)
+    e = zeros(S, length(η))
+    H0 = Matrix(H_BdG_func(e, number_of_modes))   # affine offset H(0)
+
+    ptr = [1]; rows = Int[]; cols = Int[]; vals = ComplexF64[]
+    for a in eachindex(η)
+        e[a] = one(S)
+        dH = Matrix(H_BdG_func(e, number_of_modes)) .- H0         # ∂H/∂Re ηₐ
+        if S <: Complex
+            e[a] = im * one(S)
+            dH_im = Matrix(H_BdG_func(e, number_of_modes)) .- H0  # ∂H/∂Im ηₐ
+            dH = 0.5 .* (dH .- im .* dH_im)                       # Wirtinger ∂H/∂ηₐ
+        end
+        e[a] = zero(S)
+
+        for j in 1:number_of_modes, i in 1:number_of_modes
+            value = dH[i, j]
+            iszero(value) && continue
+            push!(rows, i); push!(cols, j); push!(vals, value)
+        end
+        push!(ptr, length(rows) + 1)
+    end
+    return ProjectedDerivativeEntries(ptr, rows, cols, vals)
+end
+
+"""
     ParameterizedGutzwillerProjectedState(gaussian_state; Nup=nothing, gap_tolerance=1e-8)
 
 Represent a parameterized single-occupancy Gutzwiller projection of a
@@ -249,6 +302,7 @@ mutable struct ParameterizedGutzwillerProjectedState <: AbstractGutzwillerProjec
     N::Int
     Nup::Union{Nothing,Int}
     gap_tolerance::Float64
+    derivative_entries::ProjectedDerivativeEntries  # η-independent, built once per state
 end
 
 """
@@ -587,6 +641,11 @@ function ParameterizedGutzwillerProjectedState(
         number_of_sites,
         fixed_Nup,
         Float64(gap_tolerance),
+        projected_derivative_entries(
+            gaussian_state.H_BdG_func,
+            parameters,
+            gaussian_state.N,
+        ),
     )
 end
 
@@ -758,17 +817,22 @@ function _gutzwiller_log_gradient(
     selected_response = inverse_slater * selected_unoccupied
     response_weights = Matrix(transpose(selected_response)) ./ response_denominators
     X = occupied * transpose(response_weights) * adjoint(unoccupied)
-    number_of_modes = state.number_of_modes
 
-    dHs = build_H_BdG_derivatives(
-        state.H_BdG_func,
-        parameters,
-        number_of_modes,
-    )
-    return ComplexF64[
-        sum(transpose(X) .* @view(dH[1:number_of_modes, 1:number_of_modes]))
-        for dH in dHs
-    ]
+    # tr(X * dHᵢ) = Σ_(r,c) X[c, r] * dHᵢ[r, c], summed over the few nonzero entries of dHᵢ
+    entries = state.derivative_entries
+    length(entries.ptr) == length(parameters) + 1 || throw(DimensionMismatch(
+        "derivative cache holds $(length(entries.ptr) - 1) parameters, " *
+        "the state has $(length(parameters))",
+    ))
+    gradient = zeros(ComplexF64, length(parameters))
+    @inbounds for a in eachindex(gradient)
+        value = zero(ComplexF64)
+        for k in entries.ptr[a]:entries.ptr[a+1]-1
+            value += X[entries.cols[k], entries.rows[k]] * entries.vals[k]
+        end
+        gradient[a] = value
+    end
+    return gradient
 end
 
 function get_Ok(
